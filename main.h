@@ -1,16 +1,7 @@
 #pragma once
-#include <cstdlib>
-#include "cpu.h"
+#include "system.h"
 
 
 int main();
 
-void read_bios(const char* bios_location);
-void read_rom_file(const char* rom_loaction);
-
-void populate_instructions;
-
-void map_memory();
-
-
-void *rom;
+int read_rom_from_file(const char* romLoc);

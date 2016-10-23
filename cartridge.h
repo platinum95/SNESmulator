@@ -14,6 +14,7 @@
 
 struct Emulated_Cartridge {
 	char* rom;
+	char* sram;
 	_Bool romLoaded;
 	long size;
 	short romType;

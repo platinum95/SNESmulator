@@ -1,36 +1,15 @@
-﻿Build started 21/10/2016 01:05:44.
-     1>Project "D:\Projects\c++\VS2015\SNESmulator\SNESmulator\SNESmulator.vcxproj" on node 2 (Build target(s)).
-     1>ClCompile:
-         D:\Program Files (x86)\Microsoft Visual Studio 14.0\VC\bin\CL.exe /c /IInclude /ZI /nologo /W3 /WX- /Od /Oy- /D WIN32 /D _DEBUG /D _CONSOLE /D _UNICODE /D UNICODE /Gm /EHsc /RTC1 /MDd /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline /Fo"Debug\\" /Fd"Debug\vc140.pdb" /Gd /TC /analyze- /errorReport:prompt cartridge.c cpu.c hardware.c main.c ram.c
-         ram.c
-         main.c
-     1>d:\projects\c++\vs2015\snesmulator\snesmulator\main.c(7): warning C4013: 'initialise_cpu' undefined; assuming extern returning int
-         hardware.c
-         cpu.c
-     1>d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(7): warning C4047: '=': 'unsigned int' differs in levels of indirection from 'char *'
-     1>d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(8): warning C4305: '=': truncation from 'short' to 'char'
-     1>d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(31): warning C4133: 'initializing': incompatible types - from 'char *' to 'short *'
-     1>d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(32): warning C4133: 'initializing': incompatible types - from 'char *' to 'short *'
-     1>d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(33): warning C4133: 'initializing': incompatible types - from 'char *' to 'short *'
-     1>d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(49): warning C4133: 'initializing': incompatible types - from 'char *' to 'short *'
-     1>d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(50): warning C4133: 'initializing': incompatible types - from 'char *' to 'short *'
-     1>d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(51): warning C4133: 'initializing': incompatible types - from 'char *' to 'int *'
-         cartridge.c
-     1>d:\projects\c++\vs2015\snesmulator\snesmulator\cartridge.c(7): warning C4996: 'fopen': This function or variable may be unsafe. Consider using fopen_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
-         c:\program files (x86)\windows kits\10\include\10.0.10150.0\ucrt\stdio.h(205): note: see declaration of 'fopen'
-     1>d:\projects\c++\vs2015\snesmulator\snesmulator\cartridge.c(47): warning C4133: 'initializing': incompatible types - from 'char *' to 'long *'
-     1>d:\projects\c++\vs2015\snesmulator\snesmulator\cartridge.c(88): warning C4133: 'initializing': incompatible types - from 'char *' to 'long *'
-         Generating Code...
-     1>d:\projects\c++\vs2015\snesmulator\snesmulator\cartridge.c(39): warning C4715: 'checkRomType': not all control paths return a value
-       Link:
-         D:\Program Files (x86)\Microsoft Visual Studio 14.0\VC\bin\link.exe /ERRORREPORT:PROMPT /OUT:"D:\Projects\c++\VS2015\SNESmulator\Debug\SNESmulator.exe" /INCREMENTAL /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /Debug /PDB:"D:\Projects\c++\VS2015\SNESmulator\Debug\SNESmulator.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:"D:\Projects\c++\VS2015\SNESmulator\Debug\SNESmulator.lib" /MACHINE:X86 Debug\cartridge.obj
-         Debug\cpu.obj
-         Debug\hardware.obj
-         Debug\main.obj
-         Debug\ram.obj
-         SNESmulator.vcxproj -> D:\Projects\c++\VS2015\SNESmulator\Debug\SNESmulator.exe
-     1>Done Building Project "D:\Projects\c++\VS2015\SNESmulator\SNESmulator\SNESmulator.vcxproj" (Build target(s)).
-
-Build succeeded.
-
-Time Elapsed 00:00:01.41
+﻿  system.c
+c:\projects\c++\vs2015\snesmulator\system.c(32): warning C4028: formal parameter 2 different from declaration
+c:\projects\c++\vs2015\snesmulator\system.c(34): warning C4028: formal parameter 2 different from declaration
+  main.c
+  cpu.c
+c:\projects\c++\vs2015\snesmulator\cpu.c(7): warning C4047: '=': 'unsigned int' differs in levels of indirection from 'char *'
+c:\projects\c++\vs2015\snesmulator\cpu.c(751): warning C4133: 'initializing': incompatible types - from 'char *' to 'short *'
+c:\projects\c++\vs2015\snesmulator\cpu.c(752): warning C4133: 'initializing': incompatible types - from 'char *' to 'short *'
+c:\projects\c++\vs2015\snesmulator\cpu.c(753): warning C4133: 'initializing': incompatible types - from 'char *' to 'short *'
+c:\projects\c++\vs2015\snesmulator\cpu.c(769): warning C4133: 'initializing': incompatible types - from 'char *' to 'short *'
+c:\projects\c++\vs2015\snesmulator\cpu.c(770): warning C4133: 'initializing': incompatible types - from 'char *' to 'short *'
+c:\projects\c++\vs2015\snesmulator\cpu.c(771): warning C4133: 'initializing': incompatible types - from 'char *' to 'int *'
+  Generating Code...
+c:\projects\c++\vs2015\snesmulator\system.c(36): warning C4716: 'startup': must return a value
+  SNESmulator.vcxproj -> C:\Projects\C++\VS2015\SNESmulator\Debug\SNESmulator.exe
