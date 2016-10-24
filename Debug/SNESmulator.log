@@ -1,16 +1,15 @@
-﻿  cpu.c
-c:\projects\c++\vs2015\snesmulator\cpu.c(43): warning C4133: '=': incompatible types - from 'uint8_t *' to 'uint16_t *'
-c:\projects\c++\vs2015\snesmulator\cpu.c(799): warning C4133: 'initializing': incompatible types - from 'uint8_t *' to 'short *'
-c:\projects\c++\vs2015\snesmulator\cpu.c(800): warning C4133: 'initializing': incompatible types - from 'uint8_t *' to 'short *'
-c:\projects\c++\vs2015\snesmulator\cpu.c(801): warning C4133: 'initializing': incompatible types - from 'uint8_t *' to 'short *'
-c:\projects\c++\vs2015\snesmulator\cpu.c(808): warning C4047: 'function': 'unsigned int' differs in levels of indirection from 'uint16_t *'
-c:\projects\c++\vs2015\snesmulator\cpu.c(808): warning C4024: 'access_address': different types for formal and actual parameter 1
-c:\projects\c++\vs2015\snesmulator\cpu.c(818): warning C4133: 'initializing': incompatible types - from 'uint8_t *' to 'short *'
-c:\projects\c++\vs2015\snesmulator\cpu.c(819): warning C4133: 'initializing': incompatible types - from 'uint8_t *' to 'short *'
-c:\projects\c++\vs2015\snesmulator\cpu.c(820): warning C4133: 'initializing': incompatible types - from 'uint8_t *' to 'int *'
-c:\projects\c++\vs2015\snesmulator\cpu.c(878): warning C4047: 'function': 'uint16_t' differs in levels of indirection from 'uint16_t *'
-c:\projects\c++\vs2015\snesmulator\cpu.c(878): warning C4024: 'store2Byte': different types for formal and actual parameter 1
-c:\projects\c++\vs2015\snesmulator\cpu.c(1103): warning C4047: 'function': 'uint16_t' differs in levels of indirection from 'uint8_t *'
-c:\projects\c++\vs2015\snesmulator\cpu.c(1103): warning C4024: 'store2Byte': different types for formal and actual parameter 1
-c:\projects\c++\vs2015\snesmulator\cpu.c(1121): warning C4047: '=': 'uint16_t *' differs in levels of indirection from 'uint16_t'
-  SNESmulator.vcxproj -> C:\Projects\C++\VS2015\SNESmulator\Debug\SNESmulator.exe
+﻿Build started 24/10/2016 21:12:02.
+     1>Project "D:\Projects\c++\VS2015\SNESmulator\SNESmulator\SNESmulator.vcxproj" on node 2 (Build target(s)).
+     1>Link:
+         D:\Program Files (x86)\Microsoft Visual Studio 14.0\VC\bin\link.exe /ERRORREPORT:PROMPT /OUT:"D:\Projects\c++\VS2015\SNESmulator\SNESmulator\Debug\SNESmulator.exe" /INCREMENTAL /NOLOGO kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /Debug /PDB:"D:\Projects\c++\VS2015\SNESmulator\SNESmulator\Debug\SNESmulator.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:"D:\Projects\c++\VS2015\SNESmulator\SNESmulator\Debug\SNESmulator.lib" /MACHINE:X86 Debug\cartridge.obj
+         Debug\cpu.obj
+         Debug\hardware.obj
+         Debug\main.obj
+         Debug\ram.obj
+         Debug\system.obj
+         SNESmulator.vcxproj -> D:\Projects\c++\VS2015\SNESmulator\SNESmulator\Debug\SNESmulator.exe
+     1>Done Building Project "D:\Projects\c++\VS2015\SNESmulator\SNESmulator\SNESmulator.vcxproj" (Build target(s)).
+
+Build succeeded.
+
+Time Elapsed 00:00:00.22

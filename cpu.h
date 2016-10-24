@@ -16,7 +16,9 @@ uint16_t accumulator;
 uint32_t program_counter;
 uint16_t *stack_pointer;
 uint16_t data_bank_register;
+uint16_t program_bank_register;
 uint16_t direct_page;
+uint16_t X, Y;
 #pragma endregion
 
 #pragma endregion

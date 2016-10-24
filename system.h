@@ -46,4 +46,5 @@ void store4Byte(uint16_t loc, uint32_t val);
 //Generate a 3 byte value
 uint32_t gen3Byte(uint8_t bank, uint16_t addr);
 
+
 #endif

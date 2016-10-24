@@ -4,35 +4,40 @@
 
 _Bool inEmulationMode = 1, carryIsEmulationBit = 0;
 
+uint32_t call_stack[30];
+uint8_t cs_counter = 0;
+_Bool accumulator_is_8bit = 1;
 #pragma region private_functions
 
 #pragma region addressing_modes
-//ImmediateMemoryFlag;
-//ImmediateIndexFlag;
-/*
-uint8_t Immediate_8();
-uint16_t Immediate_16();
-uint32_t Relative();
-uint32_t Relative_long();
-uint8_t Direct();
-Direct indexed(with X)
-Direct indexed(with Y)
-Direct indirect
-Direct indexed indirect
-Direct indirect indexed
-Direct indirect long
-Direct indirect indexed long
-Absolute
-Absolute indexed(with X)
-Absolute indexed(with Y)
-Absolute long
-Absolute indexed long
-Stack relative
-Stack relative indirect indexed
-Absolute indirect
-Absolute indirect long
-Absolute indexed indirect
-*/
+uint8_t immediate_8();
+uint16_t immediate_16();
+
+char relative();
+short relative_long();
+
+uint16_t direct();
+uint32_t direct_indexed_x();
+uint32_t direct_indexed_y();
+uint32_t direct_indirect();
+uint32_t direct_indexed_indirect();
+uint32_t direct_indirect_indexed();
+uint32_t direct_indirect_long();
+uint32_t direct_indirect_indexed_long();
+
+uint32_t absolute();
+uint16_t absolute_indexed_x();
+uint16_t absolute_indexed_y();
+uint32_t absolute_long();
+uint32_t absolute_indexed_long();
+uint16_t absolute_indirect();
+uint32_t absolute_indirect_long();
+uint16_t absolute_indexed_indirect();
+
+uint16_t stack_relative();
+uint32_t stack_relative_indirect_indexed();
+
+
 
 #pragma endregion
 
@@ -52,6 +57,131 @@ void execute_next_instruction() {
 	(*instructions[current_instruction])();
 
 }
+
+
+#pragma region addressing_modes
+
+uint8_t immediate_8() {
+	uint8_t operand = (uint8_t) *(access_address(program_counter + 1));
+	return operand;
+}
+
+uint16_t immediate_16() {
+	uint8_t *addr = access_address(program_counter + 1);
+	uint16_t operand = addr[1];
+	operand = operand << 8;
+	operand = operand | addr[0];
+	return operand;
+}
+
+char relative() {
+	uint8_t val = immediate_8();
+	char s_val = (char)val;
+	return s_val;
+}
+
+short relative_long() {
+	uint16_t val = immediate_16();
+	short s_val = (short)val;
+	return s_val;
+}
+
+uint16_t direct() {
+	uint8_t operand = immediate_8();
+	uint16_t new_addr = direct_page + operand;
+	return new_addr;
+}
+
+uint32_t direct_indexed_x() {
+	uint8_t operand = immediate_8();
+	return direct_page + operand + X;
+}
+uint32_t direct_indexed_y() {
+	uint8_t operand = immediate_8();
+	return direct_page + operand + Y;
+}
+uint32_t direct_indirect() {
+	uint32_t new_addr_addr = direct();
+	uint16_t new_addr = get2Byte(accessSystemRam()[new_addr_addr]);
+	return data_bank_register + new_addr;
+}
+uint32_t direct_indexed_indirect() {
+	uint8_t operand = immediate_8();
+	uint16_t dp_addr = operand + direct_page + X;
+	uint16_t new_addr = get2Byte(accessSystemRam()[dp_addr]);
+	return (uint32_t)(data_bank_register + new_addr);
+}
+uint32_t direct_indirect_indexed() {
+	uint8_t operand = immediate_8();
+	uint16_t base_addr = get2Byte(accessSystemRam()[direct_page + operand]);
+	uint32_t new_addr = data_bank_register + base_addr + Y;
+	return new_addr;
+}
+uint32_t direct_indirect_long() {
+	uint32_t new_addr_addr = direct();
+	uint32_t new_addr = get3Byte(accessSystemRam()[new_addr_addr]);
+	return new_addr;
+}
+uint32_t direct_indirect_indexed_long() {
+	uint8_t operand = immediate_8();
+	uint32_t new_addr = get3Byte(accessSystemRam()[direct_page + operand]);
+	return new_addr;
+}
+
+uint32_t absolute() {
+	uint16_t addr = immediate_16();
+	return data_bank_register + addr;
+}
+
+uint16_t absolute_indexed_x() {
+	return direct_page + immediate_16() + X;
+}
+
+uint16_t absolute_indexed_y() {
+	return direct_page + immediate_16() + Y;
+}
+
+uint32_t absolute_long() {
+	uint8_t *addr = access_address(program_counter + 1);
+	uint32_t operand = addr[2];
+	operand = operand << 8;
+	operand = operand | addr[1];
+	operand = operand << 8;
+	operand = operand | addr[0];
+	return operand;
+}
+
+uint32_t absolute_indexed_long() {
+	return absolute_long() + X;
+}
+
+uint16_t absolute_indirect() {
+	uint16_t operand = immediate_16();
+	uint16_t addr = get2Byte(accessSystemRam()[operand]);
+	return addr;
+}
+uint32_t absolute_indirect_long() {
+	uint16_t operand = immediate_16();
+	uint32_t addr = get3Byte(accessSystemRam()[operand]);
+	return addr;
+}
+uint16_t absolute_indexed_indirect() {
+	uint16_t operand = immediate_16();
+	uint16_t addr = get2Byte(accessSystemRam()[operand + X]);
+	return addr;
+}
+
+uint16_t stack_relative() {
+	return stack_pointer + immediate_8();
+}
+
+uint32_t stack_relative_indirect_indexed() {
+	uint32_t new_addr = data_bank_register + stack_pointer + immediate_8() + Y;
+	return new_addr;
+}
+
+#pragma endregion
+
 
 #pragma region INSTRUCTIONS
 
@@ -333,56 +463,129 @@ void populate_instructions() {
 
 }
 
+void ADC_8(uint8_t toAdd) {
+	accumulator = accumulator + toAdd + (1 & p_register);
+}
+void ADC_16(uint16_t toAdd) {
+	accumulator = accumulator + toAdd + (1 & p_register);
+}
 //ADC(_dp_, X)	61	DP Indexed Indirect, X	NV— - ZC	2
 void f61_ADC(){
-	unsigned char operand = getRomData()[program_counter + 1];
-	short data = getRomData()[operand + direct_page];
-	accumulator = accumulator + data + (1 & p_register);
+	uint32_t operand = direct_indexed_indirect();
+	uint8_t data = access_address(operand);
+	ADC_8(data);
 	program_counter += 2;
 }
 
 //ADC sr, S	63	Stack Relative	NV— - ZC	2
 void f63_ADC(){
+	uint16_t stack_addr = stack_relative();
+	uint8_t data = accessSystemRam()[stack_addr];
+	ADC_8(data);
+	program_counter += 2;
 }
 
 //ADC dp	65	Direct Page	NV— - ZC	2
-void f65_ADC(){}
+void f65_ADC(){
+	uint16_t new_page = direct();
+	uint8_t data = accessSystemRam()[new_page];
+	ADC_8(data);
+	program_counter += 2;
+}
 
 //ADC[_dp_]	67	DP Indirect Long	NV— - ZC	2
-void f67_ADC(){}
+void f67_ADC(){
+	uint32_t new_addr = direct_indirect_long();
+	uint8_t data = (uint8_t) *access_address(new_addr);
+	ADC_8(data);
+	program_counter += 2;
+}
 
 //ADC #const	69	Immediate	NV— - ZC	23
-void f69_ADC(){}
+void f69_ADC(){
+	ADC_8(immediate_8);
+	program_counter += 2;
+}
 
 //ADC addr	6D	Absolute	NV— - ZC	3
-void f6D_ADC(){}
+void f6D_ADC(){
+	uint32_t new_addr = absolute();
+	uint8_t data = (uint8_t)*access_address(new_addr);
+	ADC_8(data);
+	program_counter += 3;
+}
 
 //ADC long	6F	Absolute Long	NV— - ZC	4
-void f6F_ADC(){}
+void f6F_ADC(){
+	uint32_t new_addr = absolute_long();
+	uint8_t data = (uint8_t)*access_address(new_addr);
+	ADC_8(data);
+	program_counter += 4;
+}
 
 //ADC(dp), Y	71	DP Indirect Indexed, Y	NV— - ZC	2
-void f71_ADC(){}
+void f71_ADC(){
+	uint32_t new_addr = direct_indirect_indexed();
+	uint8_t data = (uint8_t)*access_address(new_addr);
+	ADC_8(data);
+	program_counter += 2;
+}
 
 //ADC(_dp_)	72	DP Indirect	NV— - ZC	2
-void f72_ADC(){}
+void f72_ADC(){
+	uint32_t new_addr = direct_indirect();
+	uint8_t data = (uint8_t)*access_address(new_addr);
+	ADC_8(data);
+	program_counter += 2;
+}
 
 //ADC(_sr_, S), Y	73	SR Indirect Indexed, Y	NV— - ZC	2
-void f73_ADC(){}
+void f73_ADC(){
+	uint32_t new_addr = stack_relative_indirect_indexed();
+	uint8_t data = (uint8_t)*access_address(new_addr);
+	ADC_8(data);
+	program_counter += 2;
+}
 
 //ADC dp, X	75	DP Indexed, X	NV— - ZC	2
-void f75_ADC(){}
+void f75_ADC(){
+	uint32_t new_addr = direct_indexed_x();
+	uint8_t data = (uint8_t)*access_address(new_addr);
+	ADC_8(data);
+	program_counter += 2;
+}
 
 //ADC[_dp_], Y	77	DP Indirect Long Indexed, Y	NV— - ZC	2
-void f77_ADC(){}
+void f77_ADC(){
+	uint32_t new_addr = direct_indirect_indexed_long();
+	uint8_t data = (uint8_t)*access_address(new_addr);
+	ADC_8(data);
+	program_counter += 2;
+}
 
 //ADC addr, Y	79	Absolute Indexed, Y	NV— - ZC	3
-void f79_ADC(){}
+void f79_ADC(){
+	uint32_t new_addr = absolute_indexed_y();
+	uint8_t data = (uint8_t)*access_address(new_addr);
+	ADC_8(data);
+	program_counter += 3;
+}
 
 //ADC addr, X	7D	Absolute Indexed, X	NV— - ZC	3
-void f7D_ADC(){}
+void f7D_ADC(){
+	uint32_t new_addr = absolute_indexed_x();
+	uint8_t data = (uint8_t)*access_address(new_addr);
+	ADC_8(data);
+	program_counter += 3;
+}
 
 //ADC long, X	7F	Absolute Long Indexed, X	NV— - ZC	4
-void f7F_ADC(){}
+void f7F_ADC(){
+	uint32_t new_addr = absolute_indexed_long();
+	uint8_t data = (uint8_t)*access_address(new_addr);
+	ADC_8(data);
+	program_counter += 4;
+}
 
 //AND(_dp, _X)	21	DP Indexed Indirect, X	N—–Z - 2
 void f21_AND(){}
@@ -678,17 +881,26 @@ void fDC_JMP(){}
 
 //JSR addr	20	Absolute		3
 void f20_JSR(){
-	char *rom = getRomData() + program_counter + 1;
-	unsigned int operand = (0xFF0000 & rom[0]) | (0xFF00 & rom[1]) | (0xFF & rom[2]);
-	program_counter = operand;
+	uint16_t operand = absolute();
+	uint32_t addr = program_counter ;
+	addr = addr & 0xFFFF0000;
+	addr = addr | operand;
+	call_stack[cs_counter++] = program_counter;
+	program_counter = addr;
 
 }
 
 //JSR long	22	Absolute Long		4
-void f22_JSR(){}
+void f22_JSR(){
+	uint32_t operand = absolute_long(program_counter + 1);
+	call_stack[cs_counter++] = program_counter;
+	program_counter = operand;
+
+}
 
 //JSR(addr, X))	FC	Absolute Indexed Indirect		3
-void fFC_JSR(){}
+void fFC_JSR(){
+}
 
 //LDA(_dp, _X)	A1	DP Indexed Indirect, X	N—–Z - 2
 void fA1_LDA(){}
@@ -704,10 +916,19 @@ void fA7_LDA(){}
 
 //LDA #const	A9	Immediate	N—–Z - 2
 void fA9_LDA(){
-	uint8_t operand = (uint8_t) *(access_address(program_counter + 1));
-	accumulator &= 0xFF00;
-	accumulator |= (0x00FF & operand);
-	program_counter += 2;
+	if (p_register & 0x20) {
+		uint8_t operand = (uint8_t)*(access_address(program_counter + 1));
+		accumulator &= 0xFF00;
+		accumulator |= (0x00FF & operand);
+		program_counter += 2;
+	}
+	else {
+		uint16_t operand = immediate_16();
+		accumulator = operand;
+		program_counter += 3;
+	}
+	return;
+	
 }
 
 //LDA addr	AD	Absolute	N—–Z - 3
@@ -868,7 +1089,11 @@ void f62_PER(){}
 void f48_PHA(){}
 
 //PHB	8B	Stack(Push)		1
-void f8B_PHB(){}
+void f8B_PHB(){
+	store2Byte(stack_pointer, (uint16_t)(program_counter >> 16));
+	stack_pointer -= 2;
+	program_counter++;
+}
 
 //PHD	0B	Stack(Push)		1
 void f0B_PHD(){}
@@ -1020,6 +1245,8 @@ void fE2_SEP(){
 	p_register |= operand;
 	if (carryIsEmulationBit && (operand & 0x01))
 		inEmulationMode = !inEmulationMode;
+	if (!inEmulationMode && (operand & 0x20))
+		accumulator_is_8bit = 1;
 	program_counter += 2;
 }
 
@@ -1044,7 +1271,12 @@ void f8D_STA(){
 }
 
 //STA long	8F	Absolute Long		4
-void f8F_STA(){}
+void f8F_STA(){
+	uint32_t operand = absolute_long();
+	uint8_t *addr = access_address(operand);
+	addr[0] = (uint8_t)(accumulator & 0xFF00);
+	addr[1] = (uint8_t)(accumulator & 0x00FF);
+}
 
 //STA(_dp_), Y	91	DP Indirect Indexed, Y		2
 void f91_STA(){}

@@ -148,7 +148,7 @@ uint8_t *access_address_from_bank_hiRom(uint8_t bank, uint16_t offset) {
 	if (bank >= 0x80 && bank <= 0xFD) {
 		uint8_t newBank = bank - 0x80;
 		if (newBank >= 0 && newBank <= 0x3F) {
-			int romIndex = (newBank * 0x7FFF) + offset;
+			int romIndex = (newBank * 0x10000) + offset;
 			return &emulated_cartidge.rom[romIndex];
 		}
 		else	
