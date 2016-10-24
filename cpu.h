@@ -1,4 +1,5 @@
 #pragma once
+#include <stdint.h>
 
 void initialise_cpu();
 void execute_next_instruction();
@@ -7,18 +8,21 @@ void populate_instructions();
 
 char registers[30 * 2];
 
-
-
-
 #pragma region Registers
-unsigned int p_register;
+uint16_t p_register;
 
 #pragma region Internal_Registers
-short accumulator;
-unsigned int program_counter;
-unsigned int stack_pointer;
-unsigned int direct_page;
+uint16_t accumulator;
+uint32_t program_counter;
+uint16_t *stack_pointer;
+uint16_t data_bank_register;
+uint16_t direct_page;
 #pragma endregion
+
+#pragma endregion
+
+#pragma region Adressing_Modes
+uint16_t dp_indexed_x(char* loc);
 
 #pragma endregion
 

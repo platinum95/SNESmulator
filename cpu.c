@@ -2,16 +2,53 @@
 #include "cpu.h"
 #include "system.h"
 
+_Bool inEmulationMode = 1, carryIsEmulationBit = 0;
+
+#pragma region private_functions
+
+#pragma region addressing_modes
+//ImmediateMemoryFlag;
+//ImmediateIndexFlag;
+/*
+uint8_t Immediate_8();
+uint16_t Immediate_16();
+uint32_t Relative();
+uint32_t Relative_long();
+uint8_t Direct();
+Direct indexed(with X)
+Direct indexed(with Y)
+Direct indirect
+Direct indexed indirect
+Direct indirect indexed
+Direct indirect long
+Direct indirect indexed long
+Absolute
+Absolute indexed(with X)
+Absolute indexed(with Y)
+Absolute long
+Absolute indexed long
+Stack relative
+Stack relative indirect indexed
+Absolute indirect
+Absolute indirect long
+Absolute indexed indirect
+*/
+
+#pragma endregion
+
+#pragma endregion
+
 
 void initialise_cpu() {
 	stack_pointer = access_address(0x7E0000);
-	direct_page = (short)0000;
+	direct_page = (uint16_t)0000;
 	populate_instructions();
 
 }
 
 void execute_next_instruction() {
-	unsigned char current_instruction = getRomData()[program_counter];
+	uint8_t *romLoc = getRomData();
+	uint8_t current_instruction = (uint8_t) *(access_address(program_counter));
 	(*instructions[current_instruction])();
 
 }
@@ -297,10 +334,16 @@ void populate_instructions() {
 }
 
 //ADC(_dp_, X)	61	DP Indexed Indirect, X	NV— - ZC	2
-void f61_ADC(){}
+void f61_ADC(){
+	unsigned char operand = getRomData()[program_counter + 1];
+	short data = getRomData()[operand + direct_page];
+	accumulator = accumulator + data + (1 & p_register);
+	program_counter += 2;
+}
 
 //ADC sr, S	63	Stack Relative	NV— - ZC	2
-void f63_ADC(){}
+void f63_ADC(){
+}
 
 //ADC dp	65	Direct Page	NV— - ZC	2
 void f65_ADC(){}
@@ -618,7 +661,11 @@ void fC8_INY(){}
 void f4C_JMP(){}
 
 //JMP long	5C	Absolute Long		4
-void f5C_JMP(){}
+void f5C_JMP(){
+	uint8_t bank = (uint8_t) *(access_address(program_counter + 3));
+	uint16_t addr = get2Byte(access_address( program_counter + 1));
+	program_counter = gen3Byte(bank, addr);
+}
 
 //JMP(_addr_)	6C	Absolute Indirect		3
 void f6C_JMP(){}
@@ -634,6 +681,7 @@ void f20_JSR(){
 	char *rom = getRomData() + program_counter + 1;
 	unsigned int operand = (0xFF0000 & rom[0]) | (0xFF00 & rom[1]) | (0xFF & rom[2]);
 	program_counter = operand;
+
 }
 
 //JSR long	22	Absolute Long		4
@@ -656,9 +704,9 @@ void fA7_LDA(){}
 
 //LDA #const	A9	Immediate	N—–Z - 2
 void fA9_LDA(){
-	char *val = getRomData() + program_counter + 1;
-	unsigned char operand = val[0];
-	accumulator = operand;
+	uint8_t operand = (uint8_t) *(access_address(program_counter + 1));
+	accumulator &= 0xFF00;
+	accumulator |= (0x00FF & operand);
 	program_counter += 2;
 }
 
@@ -752,6 +800,7 @@ void f01_ORA(){
 	short *dpVal = access_address(direct_page);
 	short *value = access_address(*dpVal + *operand);
 	accumulator = accumulator | *value;
+	program_counter += 2;
 }
 
 //ORA sr, S	3	Stack Relative	N—–Z - 2
@@ -770,6 +819,7 @@ void f07_ORA(){
 	short *dpVal = access_address(direct_page);
 	int *value = access_address(*dpVal);
 	accumulator = accumulator | *value;
+	program_counter += 2;
 }
 
 //ORA #const	9	Immediate	N—–Z - 2
@@ -824,7 +874,11 @@ void f8B_PHB(){}
 void f0B_PHD(){}
 
 //PHK	4B	Stack(Push)		1
-void f4B_PHK(){}
+void f4B_PHK(){
+	store2Byte(stack_pointer, (uint16_t)(program_counter >> 16));
+	stack_pointer -= 2;
+	program_counter++;
+}
 
 //PHP	8	Stack(Push)		1
 void f08_PHP(){}
@@ -839,7 +893,11 @@ void f5A_PHY(){}
 void f68_PLA(){}
 
 //PLB	AB	Stack(Pull)	N—–Z - 1
-void fAB_PLB(){}
+void fAB_PLB(){
+	stack_pointer += 2;
+	data_bank_register = get2Byte(accessSystemRam() + (long) stack_pointer);
+	program_counter += 1;
+}
 
 //PLD	2B	Stack(Pull)	N—–Z - 1
 void f2B_PLD(){}
@@ -855,10 +913,9 @@ void f7A_PLY(){}
 
 //REP #const	C2	Immediate	NVMXDIZC	2
 void fC2_REP(){
-	char *rom = getRomData() + program_counter + 1;
-	unsigned char operand = 0xFF & rom[0];// | (0xFF & rom[1]);
+	uint8_t operand = (uint8_t) *(access_address(program_counter + 1));
 	p_register = p_register & !(operand);
-	program_counter += 3;
+	program_counter += 2;
 }
 
 //ROL dp	26	Direct Page	N—–ZC	2
@@ -953,14 +1010,16 @@ void fF8_SED(){}
 
 //SEI	78	Implied	—–I–	1
 void f78_SEI(){
-	p_register = p_register & 11111011;
+	p_register = p_register & 0xFB;
 	program_counter++;
 }
 
 //SEP	E2	Immediate	NVMXDIZC	2
 void fE2_SEP(){
-	char *rom = getRomData() + program_counter + 1;
-	unsigned char operand = rom[0];
+	uint8_t operand = (uint8_t) *(access_address(program_counter + 1));
+	p_register |= operand;
+	if (carryIsEmulationBit && (operand & 0x01))
+		inEmulationMode = !inEmulationMode;
 	program_counter += 2;
 }
 
@@ -977,7 +1036,12 @@ void f85_STA(){}
 void f87_STA(){}
 
 //STA addr	8D	Absolute		3
-void f8D_STA(){}
+void f8D_STA(){
+	uint8_t *mem_mapped = access_address(program_counter + 1);
+	uint16_t addr = get2Byte(mem_mapped);
+	store2Byte(addr, accumulator);
+	program_counter += 3;
+}
 
 //STA long	8F	Absolute Long		4
 void f8F_STA(){}
@@ -1034,7 +1098,11 @@ void f64_STZ(){}
 void f74_STZ(){}
 
 //STZ addr	9C	Absolute		3
-void f9C_STZ(){}
+void f9C_STZ(){
+	uint8_t *addr = access_address(get2Byte(access_address(program_counter + 1)));
+	store2Byte(addr, 0x0000);
+	program_counter += 3;
+}
 
 //STZ addr, X	9E	Absolute Indexed, X		3
 void f9E_STZ(){}
@@ -1049,7 +1117,10 @@ void fA8_TAY(){}
 void f5B_TCD(){}
 
 //TCS	1B	Implied		1
-void f1B_TCS(){}
+void f1B_TCS(){
+	stack_pointer = accumulator;
+	program_counter++;
+}
 
 //TDC	7B	Implied	N—–Z - 1
 void f7B_TDC(){}
@@ -1095,14 +1166,17 @@ void f42_WDM(){}
 
 //XBA	EB	Implied	N—–Z - 1
 void fEB_XBA(){
-	unsigned char B = accumulator & 0x00FF;
+	uint8_t B = accumulator & 0x00FF;
 	accumulator = accumulator >> 8;
 	accumulator = accumulator | (B << 8);
 	program_counter++;
 }
 
 //XCE	FB	Implied	–MX—CE	1
-void fFB_XCE(){}
+void fFB_XCE(){
+	inEmulationMode = !inEmulationMode;
+	program_counter++;
+}
 
 
 #pragma endregion

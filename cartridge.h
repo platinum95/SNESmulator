@@ -4,6 +4,7 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdint.h>
 
 #define LoROM			0x20
 #define HiROM			0x21
@@ -13,8 +14,8 @@
 #define ExHiROM			0x35
 
 struct Emulated_Cartridge {
-	char* rom;
-	char* sram;
+	uint8_t* rom;
+	uint8_t* sram;
 	_Bool romLoaded;
 	long size;
 	short romType;

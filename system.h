@@ -9,11 +9,12 @@ System emulates the underlying system of the SNES and manages:
 #ifndef SYSTEM_H
 #define SYSTEM_H
 
+#include <stdint.h>
 //Initialise the system - akin to powering on.
 int startup();
 
 //Access point in mapped memory from 24 bit address 
-char *access_address(unsigned int addr);
+uint8_t *access_address(unsigned int addr);
 
 //Load a rom from file
 int load_rom(const char* rom_path);
@@ -22,10 +23,27 @@ int load_rom(const char* rom_path);
 void begin_execution();
 
 //Access point in memory from a 1 byte bank and a 2 byte offset
-char*(*access_address_from_bank)(char bank, short addr);
+uint8_t*(*access_address_from_bank)(char bank, short addr);
 
 //Access the start point of the rom data
-char *getRomData();
+uint8_t *getRomData();
 
+//Access the start point of system ram
+uint8_t *accessSystemRam();
+
+//Retrieve 2 byte unsigned short from location
+uint16_t get2Byte(uint8_t* loc);
+
+//Retrieve 4 byte unsigned integer from location
+uint32_t get4Byte(uint8_t* loc);
+
+//Store a 2 byte unsigned short in location, emulation mapped
+void store2Byte(uint16_t loc, uint16_t val);
+
+//Store a 4 byte unsigned short in location, emulation mapped
+void store4Byte(uint16_t loc, uint32_t val);
+
+//Generate a 3 byte value
+uint32_t gen3Byte(uint8_t bank, uint16_t addr);
 
 #endif

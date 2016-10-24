@@ -1,15 +1,16 @@
-﻿  system.c
-c:\projects\c++\vs2015\snesmulator\system.c(32): warning C4028: formal parameter 2 different from declaration
-c:\projects\c++\vs2015\snesmulator\system.c(34): warning C4028: formal parameter 2 different from declaration
-  main.c
-  cpu.c
-c:\projects\c++\vs2015\snesmulator\cpu.c(7): warning C4047: '=': 'unsigned int' differs in levels of indirection from 'char *'
-c:\projects\c++\vs2015\snesmulator\cpu.c(751): warning C4133: 'initializing': incompatible types - from 'char *' to 'short *'
-c:\projects\c++\vs2015\snesmulator\cpu.c(752): warning C4133: 'initializing': incompatible types - from 'char *' to 'short *'
-c:\projects\c++\vs2015\snesmulator\cpu.c(753): warning C4133: 'initializing': incompatible types - from 'char *' to 'short *'
-c:\projects\c++\vs2015\snesmulator\cpu.c(769): warning C4133: 'initializing': incompatible types - from 'char *' to 'short *'
-c:\projects\c++\vs2015\snesmulator\cpu.c(770): warning C4133: 'initializing': incompatible types - from 'char *' to 'short *'
-c:\projects\c++\vs2015\snesmulator\cpu.c(771): warning C4133: 'initializing': incompatible types - from 'char *' to 'int *'
-  Generating Code...
-c:\projects\c++\vs2015\snesmulator\system.c(36): warning C4716: 'startup': must return a value
+﻿  cpu.c
+c:\projects\c++\vs2015\snesmulator\cpu.c(43): warning C4133: '=': incompatible types - from 'uint8_t *' to 'uint16_t *'
+c:\projects\c++\vs2015\snesmulator\cpu.c(799): warning C4133: 'initializing': incompatible types - from 'uint8_t *' to 'short *'
+c:\projects\c++\vs2015\snesmulator\cpu.c(800): warning C4133: 'initializing': incompatible types - from 'uint8_t *' to 'short *'
+c:\projects\c++\vs2015\snesmulator\cpu.c(801): warning C4133: 'initializing': incompatible types - from 'uint8_t *' to 'short *'
+c:\projects\c++\vs2015\snesmulator\cpu.c(808): warning C4047: 'function': 'unsigned int' differs in levels of indirection from 'uint16_t *'
+c:\projects\c++\vs2015\snesmulator\cpu.c(808): warning C4024: 'access_address': different types for formal and actual parameter 1
+c:\projects\c++\vs2015\snesmulator\cpu.c(818): warning C4133: 'initializing': incompatible types - from 'uint8_t *' to 'short *'
+c:\projects\c++\vs2015\snesmulator\cpu.c(819): warning C4133: 'initializing': incompatible types - from 'uint8_t *' to 'short *'
+c:\projects\c++\vs2015\snesmulator\cpu.c(820): warning C4133: 'initializing': incompatible types - from 'uint8_t *' to 'int *'
+c:\projects\c++\vs2015\snesmulator\cpu.c(878): warning C4047: 'function': 'uint16_t' differs in levels of indirection from 'uint16_t *'
+c:\projects\c++\vs2015\snesmulator\cpu.c(878): warning C4024: 'store2Byte': different types for formal and actual parameter 1
+c:\projects\c++\vs2015\snesmulator\cpu.c(1103): warning C4047: 'function': 'uint16_t' differs in levels of indirection from 'uint8_t *'
+c:\projects\c++\vs2015\snesmulator\cpu.c(1103): warning C4024: 'store2Byte': different types for formal and actual parameter 1
+c:\projects\c++\vs2015\snesmulator\cpu.c(1121): warning C4047: '=': 'uint16_t *' differs in levels of indirection from 'uint16_t'
   SNESmulator.vcxproj -> C:\Projects\C++\VS2015\SNESmulator\Debug\SNESmulator.exe
