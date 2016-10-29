@@ -14,19 +14,27 @@ uint16_t p_register;
 #pragma region Internal_Registers
 uint16_t accumulator;
 uint32_t program_counter;
-uint16_t *stack_pointer;
+uint8_t *stack_pointer;
+uint32_t stack;
 uint16_t data_bank_register;
 uint16_t program_bank_register;
 uint16_t direct_page;
 uint16_t X, Y;
-#pragma endregion
+uint8_t m_flag;
+uint8_t x_flag;
+
+#define CARRY_FLAG  0x1
+#define ZERO_FLAG 0x2
+#define INTERRUPT_FLAG 0x04
+#define DECIMAL_FLAG 0x08
+#define OVERFLOW_FLAG 0x40
+#define NEGATIVE_FLAG 0x80
+
 
 #pragma endregion
 
-#pragma region Adressing_Modes
-uint16_t dp_indexed_x(char* loc);
-
 #pragma endregion
+
 
 #pragma region INSTRUCTIONS
 

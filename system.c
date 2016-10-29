@@ -181,6 +181,16 @@ uint32_t get4Byte(uint8_t* loc) {
 	return out;
 }
 
+//Retrieve 4 byte unsigned integer from location
+uint32_t get3Byte(uint8_t* loc) {
+	uint32_t out = loc[2];
+	out = out << 8;
+	out = out | (0x00FF & loc[1]);
+	out = out << 8;
+	out = out | (0x00FF & loc[0]);
+	return out;
+}
+
 void store2Byte(uint16_t loc, uint16_t val) {
 	system_memory[loc] = (uint8_t)(val & 0xFF00);
 	system_memory[loc + 1] = (uint8_t)(val & 0x00FF);
@@ -198,4 +208,9 @@ uint32_t gen3Byte(uint8_t bank, uint16_t addr) {
 	output = bank << 16;
 	output = output | addr;
 	return output;
+}
+
+void store2Byte_local(uint8_t* loc, uint16_t val) {
+	*loc = (uint8_t)(val & 0xFF00);
+	*(loc + 1) = (uint8_t)(val & 0x00FF);
 }
