@@ -140,7 +140,7 @@ uint8_t *access_address_from_bank_hiRom(uint8_t bank, uint16_t offset) {
 	}
 	//System ram
 	if (bank >= 0x7E && bank <= 0x7F) {
-		int ram_addr = (bank - 0x7E) * 0xFFFF + offset;
+		int ram_addr = (bank - 0x7E) * 0xFFFF + offset -1;
 		return &system_memory[ram_addr];
 	}
 

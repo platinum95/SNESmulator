@@ -2,6 +2,7 @@
 #include "cpu.h"
 #include "system.h"
 #include <string.h>
+#include <stdio.h>
 
 _Bool inEmulationMode = 1, carryIsEmulationBit = 0;
 
@@ -96,13 +97,30 @@ uint16_t stack_relative_indirect_indexed_16();
 void initialise_cpu() {
 	stack_pointer = access_address(0x7E0000);
 	direct_page = (uint16_t)0000;
+	p_register = 0x34;
+	inEmulationMode = 1;
+	emulation_flag = 0x1;
 	populate_instructions();
 
 }
+const char *byte_to_binary(uint8_t x) {
+	static char b[9];
+	b[0] = '\0';
+
+	int z;
+	for (z = 128; z > 0; z >>= 1) {
+		strcat(b, ((x & z) == z) ? "1" : "0");
+	}
+
+	return b;
+}
 
 void execute_next_instruction() {
+	static int counter = 0;
+	counter++;
 	uint8_t *romLoc = getRomData();
 	uint8_t current_instruction = (uint8_t) *(access_address(program_counter));
+	printf("%03i | %06x | %02x | A:%04x | X:%04x | Y:%04x | P:%s\n", counter, program_counter, current_instruction, accumulator, X, Y, byte_to_binary(p_register));
 	(*instructions[current_instruction])();
 }
 
@@ -119,6 +137,22 @@ void set_p_register_8(uint8_t val, uint8_t flags) {
 	if (val & 0x8000 == 1)
 		p_register |= NEGATIVE_FLAG & flags;
 }
+int m_flag() {
+	uint8_t m_val = p_register & M_FLAG;
+	if (m_val > 0)
+		return 1;
+	else
+		return 0;
+}
+
+int x_flag() {
+	uint8_t x_val = p_register & X_FLAG;
+	if (x_val > 0)
+		return 1;
+	else
+		return 0;
+}
+
 
 #pragma region addressing_modes
 
@@ -191,7 +225,10 @@ uint32_t direct_indirect_indexed_long() {
 
 uint32_t absolute() {
 	uint16_t addr = immediate_16();
-	return data_bank_register + addr;
+	uint32_t system_addr = data_bank_register;
+	system_addr <<= 16;
+	system_addr |= addr;
+	return system_addr;
 }
 
 uint16_t absolute_indexed_x() {
@@ -704,42 +741,52 @@ uint16_t stack_relative_indirect_indexed_16(){
 	return data;
 }
 
-void push_to_stack_32(uint32_t val, uint32_t stack) {
-	uint8_t* local_pointer = access_address(stack);
+void push_to_stack_8(uint8_t val, uint32_t *stack) {
+	uint8_t *local_pointer = access_address_from_bank(0x00, *stack);
+	*local_pointer = val;
+	stack_pointer -= 1;
+	*stack -= 1;
+}
+
+void push_to_stack_32(uint32_t val, uint32_t *stack) {
+	uint8_t* local_pointer = access_address(*stack);
 	store4Byte(local_pointer, val);
 	stack_pointer -= 4;
+	*stack -= 4;
 }
 
-void push_to_stack_16(uint16_t val, uint32_t stack) {
-	uint8_t* local_pointer = access_address(stack);
-	store2Byte(local_pointer, val);
-	stack_pointer -= 2;
-}
-
-void push_to_stack_8(uint8_t val, uint32_t stack) {
-	uint8_t *local_pointer = access_address(stack);
-	*local_pointer =  val;
-	stack_pointer -= 1;
+void push_to_stack_16(uint16_t val, uint32_t *stack) {
+	uint8_t low_byte = (uint8_t) val;
+	uint8_t high_byte = val >> 8;
+	push_to_stack_8(high_byte, stack);
+	push_to_stack_8(low_byte, stack);
 }
 
 
-uint32_t pull_from_stack_32(uint32_t stack) {
-	uint8_t* local_pointer = access_address(stack);
+uint8_t pull_from_stack_8(uint32_t *stack) {
+	*stack += 1;
+	uint32_t stack_val = *stack;
+	uint8_t *local_pointer = access_address(stack_val);
+	stack_pointer += 1;
+	return *local_pointer;
+}
+
+uint32_t pull_from_stack_32(uint32_t *stack) {
+	uint8_t* local_pointer = access_address(*stack);
 	stack_pointer += 4;
 	return get4Byte(local_pointer);
 }
 
-uint16_t pull_from_stack_16(uint32_t stack) {
-	uint8_t* local_pointer = access_address(stack);
-	stack_pointer += 2;
-	return get2Byte(local_pointer);
+uint16_t pull_from_stack_16(uint32_t *stack) {
+	uint8_t low_byte = pull_from_stack_8(stack);
+	uint8_t high_byte = pull_from_stack_8(stack);
+	uint16_t ret = high_byte;
+	ret <<= 8;
+	ret |= low_byte;
+	return ret;
 }
 
-uint8_t pull_from_stack_8(uint32_t stack) {
-	uint8_t *local_pointer = access_address(stack);
-	stack_pointer += 1;
-	return *local_pointer;
-}
+
 
 #pragma endregion
 
@@ -907,9 +954,17 @@ void f27_AND(){
 
 //AND #const	29	Immediate	N—–Z - 2
 void f29_AND(){
-	uint8_t data = immediate_8();
-	AND_8(data);
-	program_counter += 2;
+	if (m_flag() == 0) {
+		uint8_t data = immediate_16();
+		AND_16(data);
+		program_counter += 3;
+	}
+	else {
+		uint8_t data = immediate_8();
+		AND_8(data);
+		program_counter += 2;
+	}
+	
 }
 
 //AND addr	2D	Absolute	N—–Z - 3
@@ -1240,7 +1295,7 @@ void CMP_16(uint16_t reg, uint16_t data) {
 
 //CMP(_dp, _X)	C1	DP Indexed Indirect, X	N—–ZC	2
 void fC1_CMP(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		uint16_t val = direct_indexed_indirect_16();
 		CMP_16(accumulator, val);
 	}
@@ -1253,7 +1308,7 @@ void fC1_CMP(){
 
 //CMP sr, S	C3	Stack Relative	N—–ZC	2
 void fC3_CMP(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		uint16_t val = stack_relative_16();
 		CMP_16(accumulator, val);
 	}
@@ -1266,7 +1321,7 @@ void fC3_CMP(){
 
 //CMP dp	C5	Direct Page	N—–ZC	2
 void fC5_CMP(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		uint16_t val = direct_16();
 		CMP_16(accumulator, val);
 	}
@@ -1279,7 +1334,7 @@ void fC5_CMP(){
 
 //CMP[_dp_]	C7	DP Indirect Long	N—–ZC	2
 void fC7_CMP(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		uint16_t val = direct_indirect_long_16();
 		CMP_16(accumulator, val);
 	}
@@ -1292,7 +1347,7 @@ void fC7_CMP(){
 
 //CMP #const	C9	Immediate	N—–ZC	2
 void fC9_CMP(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		uint16_t val = immediate_16();
 		CMP_16(accumulator, val);
 		program_counter += 3;
@@ -1307,7 +1362,7 @@ void fC9_CMP(){
 
 //CMP addr	CD	Absolute	N—–ZC	3
 void fCD_CMP(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		uint16_t val = absolute_16();
 		CMP_16(accumulator, val);
 	}
@@ -1320,7 +1375,7 @@ void fCD_CMP(){
 
 //CMP long	CF	Absolute Long	N—–ZC	4
 void fCF_CMP(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		uint16_t val = absolute_long_16();
 		CMP_16(accumulator, val);
 	}
@@ -1333,7 +1388,7 @@ void fCF_CMP(){
 
 //CMP(_dp_), Y	D1	DP Indirect Indexed, Y	N—–ZC	2
 void fD1_CMP(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		uint16_t val = direct_indirect_indexed_16();
 		CMP_16(accumulator, val);
 	}
@@ -1346,7 +1401,7 @@ void fD1_CMP(){
 
 //CMP(_dp_)	D2	DP Indirect	N—–ZC	2
 void fD2_CMP(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		uint16_t val = direct_indirect_16();
 		CMP_16(accumulator, val);
 	}
@@ -1359,7 +1414,7 @@ void fD2_CMP(){
 
 //CMP(_sr_, S), Y	D3	SR Indirect Indexed, Y	N—–ZC	2
 void fD3_CMP(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		uint16_t val = stack_relative_indirect_indexed_16();
 		CMP_16(accumulator, val);
 	}
@@ -1372,7 +1427,7 @@ void fD3_CMP(){
 
 //CMP dp, X	D5	DP Indexed, X	N—–ZC	2
 void fD5_CMP(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		uint16_t val = direct_indexed_x_16();
 		CMP_16(accumulator, val);
 	}
@@ -1385,7 +1440,7 @@ void fD5_CMP(){
 
 //CMP[_dp_], Y	D7	DP Indirect Long Indexed, Y	N—–ZC	2
 void fD7_CMP(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		uint16_t val = direct_indirect_indexed_long_16();
 		CMP_16(accumulator, val);
 	}
@@ -1398,7 +1453,7 @@ void fD7_CMP(){
 
 //CMP addr, Y	D9	Absolute Indexed, Y	N—–ZC	3
 void fD9_CMP(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		uint16_t val = absolute_indexed_y_16();
 		CMP_16(accumulator, val);
 	}
@@ -1411,7 +1466,7 @@ void fD9_CMP(){
 
 //CMP addr, X	DD	Absolute Indexed, X	N—–ZC	3
 void fDD_CMP(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		uint16_t val = absolute_indexed_x_16();
 		CMP_16(accumulator, val);
 	}
@@ -1424,7 +1479,7 @@ void fDD_CMP(){
 
 //CMP long, X	DF	Absolute Long Indexed, X	N—–ZC	4
 void fDF_CMP(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		uint16_t val = absolute_indexed_long_16();
 		CMP_16(accumulator, val);
 	}
@@ -1437,7 +1492,7 @@ void fDF_CMP(){
 
 //CPX #const	E0	Immediate	N—–ZC	210
 void fE0_CPX(){
-	if (x_flag == 0) {
+	if (x_flag() == 0) {
 		uint16_t val = immediate_16();
 		CMP_16(X, val);
 		program_counter += 3;
@@ -1452,7 +1507,7 @@ void fE0_CPX(){
 
 //CPX dp	E4	Direct Page	N—–ZC	2
 void fE4_CPX(){
-	if (x_flag == 0) {
+	if (x_flag() == 0) {
 		uint16_t val = direct_16();
 		CMP_16(X, val);
 	}
@@ -1465,7 +1520,7 @@ void fE4_CPX(){
 
 //CPX addr	EC	Absolute	N—–ZC	3
 void fEC_CPX(){
-	if (x_flag == 0) {
+	if (x_flag() == 0) {
 		uint16_t val = absolute_16();
 		CMP_16(X, val);
 	}
@@ -1478,7 +1533,7 @@ void fEC_CPX(){
 
 //CPY #const	C0	Immediate	N—–ZC	2
 void fC0_CPY(){
-	if (x_flag == 0) {
+	if (x_flag() == 0) {
 		uint16_t val = immediate_16();
 		CMP_16(Y, val);
 		program_counter += 3;
@@ -1493,7 +1548,7 @@ void fC0_CPY(){
 
 //CPY dp	C4	Direct Page	N—–ZC	2
 void fC4_CPY(){
-	if (x_flag == 0) {
+	if (x_flag() == 0) {
 		uint16_t val = direct_16();
 		CMP_16(Y, val);
 	}
@@ -1506,7 +1561,7 @@ void fC4_CPY(){
 
 //CPY addr	CC	Absolute	N—–ZC	3
 void fCC_CPY(){
-	if (x_flag == 0) {
+	if (x_flag() == 0) {
 		uint16_t val = absolute_16();
 		CMP_16(Y, val);
 	}
@@ -1539,7 +1594,7 @@ void DEC_16(uint8_t* local_address) {
 }
 
 void DEC(uint8_t* local_address) {
-	if (m_flag == 0)
+	if (m_flag() == 0)
 		DEC_16(local_address);
 	else
 		DEC_8(local_address);
@@ -1608,7 +1663,7 @@ void INC_16(uint8_t* local_address) {
 }
 
 void INC(uint8_t* local_address) {
-	if (m_flag == 0)
+	if (m_flag() == 0)
 		INC_16(local_address);
 	else
 		INC_8(local_address);
@@ -1677,7 +1732,7 @@ void EOR_16(uint16_t val) {
 
 //EOR(_dp, _X)	41	DP Indexed Indirect, X	N—–Z - 2
 void f41_EOR(){
-	if(m_flag == 1) {
+	if(m_flag() == 1) {
 		EOR_8(direct_indexed_indirect_8());
 	}
 	else {
@@ -1689,7 +1744,7 @@ void f41_EOR(){
 
 //EOR sr, S	43	Stack Relative	N—–Z - 2
 void f43_EOR(){
-	if (m_flag == 1) {
+	if (m_flag() == 1) {
 		EOR_8(stack_relative_8());
 	}
 	else {
@@ -1701,7 +1756,7 @@ void f43_EOR(){
 
 //EOR dp	45	Direct Page	N—–Z - 2
 void f45_EOR(){
-	if (m_flag == 1) {
+	if (m_flag() == 1) {
 		EOR_8(direct_8());
 	}
 	else {
@@ -1713,7 +1768,7 @@ void f45_EOR(){
 
 //EOR[_dp_]	47	DP Indirect Long	N—–Z - 2
 void f47_EOR(){
-	if (m_flag == 1) {
+	if (m_flag() == 1) {
 		EOR_8(direct_indirect_long_8());
 	}
 	else {
@@ -1725,7 +1780,7 @@ void f47_EOR(){
 
 //EOR #const	49	Immediate	N—–Z - 2
 void f49_EOR(){
-	if (m_flag == 1) {
+	if (m_flag() == 1) {
 		EOR_8(immediate_8());
 		program_counter += 2;
 	}
@@ -1737,7 +1792,7 @@ void f49_EOR(){
 
 //EOR addr	4D	Absolute	N—–Z - 3
 void f4D_EOR(){
-	if (m_flag == 1) {
+	if (m_flag() == 1) {
 		EOR_8(absolute_8());
 	}
 	else {
@@ -1749,7 +1804,7 @@ void f4D_EOR(){
 
 //EOR long	4F	Absolute Long	N—–Z - 4
 void f4F_EOR(){
-	if (m_flag == 1) {
+	if (m_flag() == 1) {
 		EOR_8(direct_indexed_indirect_8());
 	}
 	else {
@@ -1761,7 +1816,7 @@ void f4F_EOR(){
 
 //EOR(_dp_), Y	51	DP Indirect Indexed, Y	N—–Z - 2
 void f51_EOR(){
-	if (m_flag == 1) {
+	if (m_flag() == 1) {
 		EOR_8(absolute_long_8());
 	}
 	else {
@@ -1773,7 +1828,7 @@ void f51_EOR(){
 
 //EOR(_dp_)	52	DP Indirect	N—–Z - 2
 void f52_EOR(){
-	if (m_flag == 1) {
+	if (m_flag() == 1) {
 		EOR_8(direct_indirect_8());
 	}
 	else {
@@ -1785,7 +1840,7 @@ void f52_EOR(){
 
 //EOR(_sr_, S), Y	53	SR Indirect Indexed, Y	N—–Z - 2
 void f53_EOR(){
-	if (m_flag == 1) {
+	if (m_flag() == 1) {
 		EOR_8(stack_relative_indirect_indexed_8());
 	}
 	else {
@@ -1797,7 +1852,7 @@ void f53_EOR(){
 
 //EOR dp, X	55	DP Indexed, X	N—–Z - 2
 void f55_EOR(){
-	if (m_flag == 1) {
+	if (m_flag() == 1) {
 		EOR_8(direct_indexed_x_8());
 	}
 	else {
@@ -1809,7 +1864,7 @@ void f55_EOR(){
 
 //EOR[_dp_], Y	57	DP Indirect Long Indexed, Y	N—–Z - 2
 void f57_EOR(){
-	if (m_flag == 1) {
+	if (m_flag() == 1) {
 		EOR_8(direct_indirect_indexed_long_8());
 	}
 	else {
@@ -1821,7 +1876,7 @@ void f57_EOR(){
 
 //EOR addr, Y	59	Absolute Indexed, Y	N—–Z - 3
 void f59_EOR(){
-	if (m_flag == 1) {
+	if (m_flag() == 1) {
 		EOR_8(absolute_indexed_y_8());
 	}
 	else {
@@ -1833,7 +1888,7 @@ void f59_EOR(){
 
 //EOR addr, X	5D	Absolute Indexed, X	N—–Z - 3
 void f5D_EOR(){
-	if (m_flag == 1) {
+	if (m_flag() == 1) {
 		EOR_8(absolute_indexed_x_8());
 	}
 	else {
@@ -1845,7 +1900,7 @@ void f5D_EOR(){
 
 //EOR long, X	5F	Absolute Long Indexed, X	N—–Z - 4
 void f5F_EOR(){
-	if (m_flag == 1) {
+	if (m_flag() == 1) {
 		EOR_8(absolute_indexed_long_8());
 	}
 	else {
@@ -1867,7 +1922,7 @@ void f4C_JMP(){
 
 //JMP long	5C	Absolute Long		4
 void f5C_JMP(){
-	uint32_t operand = absolute_long_32();
+	uint32_t operand = absolute_long();
 	program_counter = operand;
 }
 
@@ -1895,27 +1950,27 @@ void fDC_JMP(){
 
 //JSR addr	20	Absolute		3
 void f20_JSR(){
-	uint16_t operand = absolute_16();
-	push_to_stack_16(program_counter + 2, stack);
-	program_counter = program_bank_register;
-	program_counter << 16;
+	uint16_t operand = absolute();
+	push_to_stack_16(program_counter + 2, &stack);
+	program_counter &= 0xFFFF0000;
 	program_counter |= operand;
 }
 
-//JSR long	22	Absolute Long		4
+//JSR or JSL long	22	Absolute Long		4
 void f22_JSR(){
-	uint32_t operand = absolute_long_16(program_counter + 1);
-	push_to_stack_16(program_counter + 3, stack);
-	program_counter = program_bank_register;
-	program_counter << 16;
-	program_counter |= operand;
+	uint32_t operand = absolute_long();
+	uint8_t pbr = program_counter >> 16;
+	push_to_stack_8(pbr, &stack);
+	uint16_t addr = program_counter;
+	push_to_stack_16(addr + 3, &stack);
+	program_counter = operand;
 
 }
 
 //JSR(addr, X))	FC	Absolute Indexed Indirect		3
 void fFC_JSR(){
 	uint16_t operand = absolute_indexed_indirect_16();
-	push_to_stack_16(program_counter + 2, stack);
+	push_to_stack_16(program_counter + 2, &stack);
 	program_counter = program_bank_register;
 	program_counter << 16;
 	program_counter |= operand;
@@ -1925,7 +1980,7 @@ void fFC_JSR(){
 #pragma region LD
 //LDA(_dp, _X)	A1	DP Indexed Indirect, X	N—–Z - 2
 void fA1_LDA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		accumulator = direct_indexed_indirect_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -1939,7 +1994,7 @@ void fA1_LDA(){
 
 //LDA sr, S	A3	Stack Relative	N—–Z - 2
 void fA3_LDA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		accumulator = stack_relative_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -1953,7 +2008,7 @@ void fA3_LDA(){
 
 //LDA dp	A5	Direct Page	N—–Z - 2
 void fA5_LDA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		accumulator = direct_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -1967,7 +2022,7 @@ void fA5_LDA(){
 
 //LDA[_dp_]	A7	DP Indirect Long	N—–Z - 2
 void fA7_LDA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		accumulator = direct_indirect_long_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -1981,13 +2036,14 @@ void fA7_LDA(){
 
 //LDA #const	A9	Immediate	N—–Z - 2
 void fA9_LDA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		accumulator = immediate_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 		program_counter += 3;
 	}
 	else {
-		accumulator = immediate_8();
+		accumulator &= 0xFF00;
+		accumulator |= immediate_8();
 		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 		program_counter += 2;
 	}
@@ -1996,7 +2052,7 @@ void fA9_LDA(){
 
 //LDA addr	AD	Absolute	N—–Z - 3
 void fAD_LDA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		accumulator = absolute_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -2010,7 +2066,7 @@ void fAD_LDA(){
 
 //LDA long	AF	Absolute Long	N—–Z - 4
 void fAF_LDA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		accumulator = absolute_long_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -2024,7 +2080,7 @@ void fAF_LDA(){
 
 //LDA(_dp_), Y	B1	DP Indirect Indexed, Y	N—–Z - 2
 void fB1_LDA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		accumulator = direct_indexed_indirect_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -2038,7 +2094,7 @@ void fB1_LDA(){
 
 //LDA(_dp_)	B2	DP Indirect	N—–Z - 2
 void fB2_LDA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		accumulator = direct_indirect_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -2052,7 +2108,7 @@ void fB2_LDA(){
 
 //LDA(_sr_, S), Y	B3	SR Indirect Indexed, Y	N—–Z - 2
 void fB3_LDA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		accumulator = stack_relative_indirect_indexed_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -2066,7 +2122,7 @@ void fB3_LDA(){
 
 //LDA dp, X	B5	DP Indexed, X	N—–Z - 2
 void fB5_LDA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		accumulator = direct_indexed_x_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -2080,7 +2136,7 @@ void fB5_LDA(){
 
 //LDA[_dp_], Y	B7	DP Indirect Long Indexed, Y	N—–Z - 2
 void fB7_LDA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		accumulator = direct_indirect_indexed_long_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -2094,7 +2150,7 @@ void fB7_LDA(){
 
 //LDA addr, Y	B9	Absolute Indexed, Y	N—–Z - 3
 void fB9_LDA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		accumulator = absolute_indexed_y_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -2108,7 +2164,7 @@ void fB9_LDA(){
 
 //LDA addr, X	BD	Absolute Indexed, X	N—–Z - 3
 void fBD_LDA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		accumulator = absolute_indexed_x_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -2122,7 +2178,7 @@ void fBD_LDA(){
 
 //LDA long, X	BF	Absolute Long Indexed, X	N—–Z - 4
 void fBF_LDA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		accumulator = absolute_indexed_long_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -2136,7 +2192,7 @@ void fBF_LDA(){
 
 //LDX #const	A2	Immediate	N—–Z - 212
 void fA2_LDX(){
-	if (x_flag == 0) {
+	if (x_flag() == 0) {
 		X = immediate_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 		program_counter += 3;
@@ -2151,7 +2207,7 @@ void fA2_LDX(){
 
 //LDX dp	A6	Direct Page	N—–Z - 2
 void fA6_LDX(){
-	if (x_flag == 0) {
+	if (x_flag() == 0) {
 		X = direct_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -2165,7 +2221,7 @@ void fA6_LDX(){
 
 //LDX addr	AE	Absolute	N—–Z - 3
 void fAE_LDX(){
-	if (x_flag == 0) {
+	if (x_flag() == 0) {
 		X = absolute_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -2179,7 +2235,7 @@ void fAE_LDX(){
 
 //LDX dp, Y	B6	DP Indexed, Y	N—–Z - 2
 void fB6_LDX(){
-	if (x_flag == 0) {
+	if (x_flag() == 0) {
 		X = direct_indexed_y_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -2193,7 +2249,7 @@ void fB6_LDX(){
 
 //LDX addr, Y	BE	Absolute Indexed, Y	N—–Z - 3
 void fBE_LDX(){
-	if (x_flag == 0) {
+	if (x_flag() == 0) {
 		X = absolute_indexed_y_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -2207,13 +2263,13 @@ void fBE_LDX(){
 
 //LDY #const	A0	Immediate	N—–Z - 2
 void fA0_LDY(){
-	if (x_flag == 0) {
-		Y = absolute_indexed_long_16();
+	if (x_flag() == 0) {
+		Y = immediate_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 		program_counter += 3;
 	}
 	else {
-		Y = absolute_indexed_long_8();
+		Y = immediate_8();
 		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 		program_counter += 2;
 
@@ -2222,7 +2278,7 @@ void fA0_LDY(){
 
 //LDY dp	A4	Direct Page	N—–Z - 2
 void fA4_LDY(){
-	if (x_flag == 0) {
+	if (x_flag() == 0) {
 		Y = direct_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -2236,7 +2292,7 @@ void fA4_LDY(){
 
 //LDY addr	AC	Absolute	N—–Z - 3
 void fAC_LDY(){
-	if (x_flag == 0) {
+	if (x_flag() == 0) {
 		Y = absolute_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -2250,7 +2306,7 @@ void fAC_LDY(){
 
 //LDY dp, X	B4	DP Indexed, X	N—–Z - 2
 void fB4_LDY(){
-	if (x_flag == 0) {
+	if (x_flag() == 0) {
 		Y = direct_indexed_x_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -2264,7 +2320,7 @@ void fB4_LDY(){
 
 //LDY addr, X	BC	Absolute Indexed, X	N—–Z - 3
 void fBC_LDY(){
-	if (x_flag == 0) {
+	if (x_flag() == 0) {
 		Y = absolute_indexed_x_16();
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
@@ -2291,7 +2347,7 @@ void LSR_16(uint8_t *local_address) {
 
 //LSR dp	46	Direct Page	N—–ZC	2
 void f46_LSR(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		LSR_16(direct());
 	}
 	else {
@@ -2310,7 +2366,7 @@ void f4A_LSR(){
 
 //LSR addr	4E	Absolute	N—–ZC	3
 void f4E_LSR(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		LSR_16(absolute());
 	}
 	else {
@@ -2322,7 +2378,7 @@ void f4E_LSR(){
 
 //LSR dp, X	56	DP Indexed, X	N—–ZC	2
 void f56_LSR(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		LSR_16(direct_indexed_x());
 	}
 	else {
@@ -2334,7 +2390,7 @@ void f56_LSR(){
 
 //LSR addr, X	5E	Absolute Indexed, X	N—–ZC	3
 void f5E_LSR(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		LSR_16(absolute_indexed_x());
 	}
 	else {
@@ -2405,7 +2461,7 @@ void ORA_16(uint16_t val) {
 
 //ORA(_dp, _X)	1	DP Indexed Indirect, X	N—–Z - 2
 void f01_ORA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		ORA_8(direct_indexed_indirect_16());
 	}
 	else {
@@ -2416,7 +2472,7 @@ void f01_ORA(){
 
 //ORA sr, S	3	Stack Relative	N—–Z - 2
 void f03_ORA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		ORA_8(stack_relative_16());
 	}
 	else {
@@ -2427,7 +2483,7 @@ void f03_ORA(){
 
 //ORA dp	5	Direct Page	N—–Z - 2
 void f05_ORA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		ORA_8(direct_16());
 	}
 	else {
@@ -2438,7 +2494,7 @@ void f05_ORA(){
 
 //ORA[_dp_]	7	DP Indirect Long	N—–Z - 2
 void f07_ORA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		ORA_8(direct_indirect_long_16());
 	}
 	else {
@@ -2449,7 +2505,7 @@ void f07_ORA(){
 
 //ORA #const	9	Immediate	N—–Z - 2
 void f09_ORA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		ORA_8(immediate_16());
 		program_counter += 3;
 	}
@@ -2462,7 +2518,7 @@ void f09_ORA(){
 
 //ORA addr	0D	Absolute	N—–Z - 3
 void f0D_ORA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		ORA_8(absolute_16());
 	}
 	else {
@@ -2473,7 +2529,7 @@ void f0D_ORA(){
 
 //ORA long	0F	Absolute Long	N—–Z - 4
 void f0F_ORA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		ORA_8(absolute_long_16());
 	}
 	else {
@@ -2484,7 +2540,7 @@ void f0F_ORA(){
 
 //ORA(_dp_), Y	11	DP Indirect Indexed, Y	N—–Z - 2
 void f11_ORA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		ORA_8(direct_indirect_indexed_16());
 	}
 	else {
@@ -2495,7 +2551,7 @@ void f11_ORA(){
 
 //ORA(_dp_)	12	DP Indirect	N—–Z - 2
 void f12_ORA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		ORA_8(direct_indirect_16());
 	}
 	else {
@@ -2506,7 +2562,7 @@ void f12_ORA(){
 
 //ORA(_sr_, S), Y	13	SR Indirect Indexed, Y	N—–Z - 2
 void f13_ORA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		ORA_8(stack_relative_indirect_indexed_16());
 	}
 	else {
@@ -2517,7 +2573,7 @@ void f13_ORA(){
 
 //ORA dp, X	15	DP Indexed, X	N—–Z - 2
 void f15_ORA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		ORA_8(direct_indexed_x_16());
 	}
 	else {
@@ -2528,7 +2584,7 @@ void f15_ORA(){
 
 //ORA[_dp_], Y	17	DP Indirect Long Indexed, Y	N—–Z - 2
 void f17_ORA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		ORA_8(direct_indirect_long_16());
 	}
 	else {
@@ -2539,7 +2595,7 @@ void f17_ORA(){
 
 //ORA addr, Y	19	Absolute Indexed, Y	N—–Z - 3
 void f19_ORA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		ORA_8(absolute_indexed_y_16());
 	}
 	else {
@@ -2550,7 +2606,7 @@ void f19_ORA(){
 
 //ORA addr, X	1D	Absolute Indexed, X	N—–Z - 3
 void f1D_ORA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		ORA_8(absolute_indexed_x_16());
 	}
 	else {
@@ -2561,7 +2617,7 @@ void f1D_ORA(){
 
 //ORA long, X	1F	Absolute Long Indexed, X	N—–Z - 4
 void f1F_ORA(){
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		ORA_8(absolute_indexed_long_16());
 	}
 	else {
@@ -2575,86 +2631,86 @@ void f1F_ORA(){
 //PEA addr	F4	Stack(Absolute)		3
 void fF4_PEA(){
 	uint16_t operand = immediate_16();
-	push_to_stack_16(operand, stack);
+	push_to_stack_16(operand, &stack);
 	program_counter += 3;
 }
 
 //PEI(dp)	D4	Stack(DP Indirect)		2
 void fD4_PEI(){
 	uint16_t operand = immediate_8();
-	push_to_stack_16(operand, stack);
+	push_to_stack_16(operand, &stack);
 	program_counter += 2;
 }
 
 //PER label	62	Stack(PC Relative Long)		3
 void f62_PER(){
 	uint16_t operand = absolute_16() + program_counter;
-	push_to_stack_16(operand, stack);
+	push_to_stack_16(operand, &stack);
 	program_counter += 3;
 }
 
 //PHA	48	Stack(Push)		1
 void f48_PHA(){
-	if(m_flag == 0)
-		push_to_stack_16(accumulator, stack);
+	if(m_flag() == 0)
+		push_to_stack_16(accumulator, &stack);
 	else
-		push_to_stack_8(accumulator, stack);
+		push_to_stack_8(accumulator, &stack);
 
 	program_counter += 1;
 }
 
 //PHB	8B	Stack(Push)		1
 void f8B_PHB(){
-	push_to_stack_8(data_bank_register, stack);
+	push_to_stack_8(data_bank_register, &stack);
 	program_counter++;
 }
 
 //PHD	0B	Stack(Push)		1
 void f0B_PHD(){
-	push_to_stack_16(direct_page, stack);
+	push_to_stack_16(direct_page, &stack);
 	program_counter++;
 }
 
 //PHK	4B	Stack(Push)		1
 void f4B_PHK(){
-	push_to_stack_8((uint8_t) (program_counter >> 16), stack);
+	push_to_stack_8((uint8_t) (program_counter >> 16), &stack);
 	program_counter++;
 }
 
 //PHP	8	Stack(Push)		1
 void f08_PHP(){
-	push_to_stack_16(p_register, stack);
+	push_to_stack_16(p_register, &stack);
 	program_counter++;
 }
 
 //PHX	DA	Stack(Push)		1
 void fDA_PHX(){
-	if (x_flag == 0)
-		push_to_stack_16(X, stack);
+	if (x_flag() == 0)
+		push_to_stack_16(X, &stack);
 	else
-		push_to_stack_8(X, stack);
+		push_to_stack_8(X, &stack);
 
 	program_counter += 1;
 }
 
 //PHY	5A	Stack(Push)		1
 void f5A_PHY(){
-	if (x_flag == 0)
-		push_to_stack_16(Y, stack);
+	if (x_flag() == 0)
+		push_to_stack_16(Y, &stack);
 	else
-		push_to_stack_8(Y, stack);
+		push_to_stack_8(Y, &stack);
 
 	program_counter += 1;
 }
 
 //PLA	68	Stack(Pull)	N—–Z - 1
 void f68_PLA(){
-	if (m_flag == 0) {
-		accumulator = pull_from_stack_16(stack);
+	if (m_flag() == 0) {
+		accumulator = pull_from_stack_16(&stack);
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
 	else {
-		accumulator = pull_from_stack_8(stack);
+		accumulator = pull_from_stack_8(&stack);
 		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
 
@@ -2663,15 +2719,15 @@ void f68_PLA(){
 
 //PLB	AB	Stack(Pull)	N—–Z - 1
 void fAB_PLB(){
-	uint8_t val = pull_from_stack_8(stack);
-	data_bank_register = ((uint32_t) val) << 16;
+	uint8_t val = pull_from_stack_8(&stack);
+	data_bank_register = val;
 	set_p_register_8(val, NEGATIVE_FLAG | ZERO_FLAG);
 	program_counter += 1;
 }
 
 //PLD	2B	Stack(Pull)	N—–Z - 1
 void f2B_PLD(){
-	uint16_t val = pull_from_stack_16(stack);
+	uint16_t val = pull_from_stack_16(&stack);
 	direct_page = val;
 	set_p_register_8(val, NEGATIVE_FLAG | ZERO_FLAG);
 	program_counter += 1;
@@ -2679,18 +2735,18 @@ void f2B_PLD(){
 
 //PLP	28	Stack(Pull)	N—–Z - 1
 void f28_PLP(){
-	p_register = pull_from_stack_16(stack);
+	p_register = pull_from_stack_16(&stack);
 	program_counter += 1;
 }
 
 //PLX	FA	Stack(Pull)	N—–Z - 1
 void fFA_PLX(){
-	if (x_flag == 0) {
-		X = pull_from_stack_16(stack);
+	if (x_flag() == 0) {
+		X = pull_from_stack_16(&stack);
 		set_p_register_16(X, NEGATIVE_FLAG | ZERO_FLAG);
 	}
 	else {
-		X = pull_from_stack_8(stack);
+		X = pull_from_stack_8(&stack);
 		set_p_register_8(X, NEGATIVE_FLAG | ZERO_FLAG);
 	}
 
@@ -2699,12 +2755,12 @@ void fFA_PLX(){
 
 //PLY	7A	Stack(Pull)	N—–Z - 1
 void f7A_PLY(){
-	if (x_flag == 0) {
-		Y = pull_from_stack_16(stack);
+	if (x_flag() == 0) {
+		Y = pull_from_stack_16(&stack);
 		set_p_register_16(Y, NEGATIVE_FLAG | ZERO_FLAG);
 	}
 	else {
-		Y = pull_from_stack_8(stack);
+		Y = pull_from_stack_8(&stack);
 		set_p_register_8(Y, NEGATIVE_FLAG | ZERO_FLAG);
 	}
 
@@ -2712,52 +2768,177 @@ void f7A_PLY(){
 }
 #pragma endregion
 
-
 #pragma region rot
+
+void ROL_8(uint8_t* addr) {
+	uint8_t val = *addr;
+	uint8_t c_flag = p_register & CARRY_FLAG;
+	uint8_t new_c_flag = val & 0x8000;
+	p_register &= !CARRY_FLAG | new_c_flag;
+	val <<= 1;
+	val |= c_flag;
+	*addr = val;
+	set_p_register_8(val, NEGATIVE_FLAG | ZERO_FLAG);
+}
+void ROL_16(uint8_t* addr) {
+	uint16_t val = get2Byte(addr);
+	uint8_t c_flag = p_register & CARRY_FLAG;
+	uint8_t new_c_flag = val & 0x80000000;
+	p_register &= !CARRY_FLAG | new_c_flag;
+	val <<= 1;
+	val |= c_flag;
+	store2Byte_local(addr, val);
+	set_p_register_16(val, NEGATIVE_FLAG | ZERO_FLAG);
+}
+
+void ROR_8(uint8_t* addr) {
+	uint8_t val = *addr;
+	uint8_t c_flag = p_register & CARRY_FLAG;
+	uint8_t new_c_flag = val & CARRY_FLAG;
+	p_register &= !CARRY_FLAG | new_c_flag;
+	c_flag <<= 7;
+	val >>= 1;
+	val |= c_flag;
+	*addr = val;
+	set_p_register_8(val, NEGATIVE_FLAG | ZERO_FLAG);
+}
+void ROR_16(uint8_t* addr) {
+	uint16_t val = get2Byte(addr);
+	uint16_t c_flag = p_register & CARRY_FLAG;
+	uint8_t new_c_flag = val & CARRY_FLAG;
+	p_register &= !CARRY_FLAG | new_c_flag;
+	c_flag <<= 15;
+	val >>= 1;
+	val |= c_flag;
+	store2Byte_local(addr, val);
+	set_p_register_16(val, NEGATIVE_FLAG | ZERO_FLAG);
+}
+
 //ROL dp	26	Direct Page	N—–ZC	2
-void f26_ROL(){}
+void f26_ROL(){
+	if (m_flag() == 0) {
+		ROL_16(access_address_from_bank(data_bank_register, direct()));
+	}
+	else {
+		ROL_8(access_address_from_bank(data_bank_register, direct()));
+	}
+	program_counter += 2;
+}
 
 //ROL A	2A	Accumulator	N—–ZC	1
-void f2A_ROL(){}
+void f2A_ROL(){
+	if (m_flag() == 0) {
+		ROL_16(&accumulator);
+	}
+	else {
+		ROL_8(&accumulator);
+	}
+	program_counter += 1;
+}
 
 //ROL addr	2E	Absolute	N—–ZC	3
-void f2E_ROL(){}
+void f2E_ROL(){
+	if (m_flag() == 0) {
+		ROL_16(access_address(absolute()));
+	}
+	else {
+		ROL_8(access_address(absolute()));
+	}
+	program_counter += 3;
+}
 
 //ROL dp, X	36	DP Indexed, X	N—–ZC	2
-void f36_ROL(){}
+void f36_ROL(){
+	if (m_flag() == 0) {
+		ROL_16(access_address(direct_indexed_x()));
+	}
+	else {
+		ROL_8(access_address(direct_indexed_x()));
+	}
+	program_counter += 3;
+}
 
 //ROL addr, X	3E	Absolute Indexed, X	N—–ZC	3
-void f3E_ROL(){}
+void f3E_ROL(){
+	if (m_flag() == 0) {
+		ROL_16(access_address_from_bank(data_bank_register, absolute_indexed_x()));
+	}
+	else {
+		ROL_8(access_address_from_bank(data_bank_register, absolute_indexed_x()));
+	}
+	program_counter += 3;
+}
 
 //ROR dp	66	Direct Page	N—–ZC	2
-void f66_ROR(){}
+void f66_ROR(){
+	if (m_flag() == 0) {
+		ROR_16(access_address_from_bank(data_bank_register, direct()));
+	}
+	else {
+		ROR_8(access_address_from_bank(data_bank_register, direct()));
+	}
+	program_counter += 2;
+}
 
 //ROR A	6A	Accumulator	N—–ZC	1
-void f6A_ROR(){}
+void f6A_ROR(){
+	if (m_flag() == 0) {
+		ROR_16(&accumulator);
+	}
+	else {
+		ROR_8(&accumulator);
+	}
+	program_counter += 1;
+}
 
 //ROR addr	6E	Absolute	N—–ZC	3
-void f6E_ROR(){}
+void f6E_ROR(){
+	if (m_flag() == 0) {
+		ROR_16(access_address(absolute()));
+	}
+	else {
+		ROR_8(access_address(absolute()));
+	}
+	program_counter += 3;
+}
 
 //ROR dp, X	76	DP Indexed, X	N—–ZC	2
-void f76_ROR(){}
+void f76_ROR(){
+	if (m_flag() == 0) {
+		ROR_16(access_address(direct_indexed_x()));
+	}
+	else {
+		ROR_8(access_address(direct_indexed_x()));
+	}
+	program_counter += 3;
+}
 
 //ROR addr, X	7E	Absolute Indexed, X	N—–ZC	3
-void f7E_ROR(){}
+void f7E_ROR(){
+	if (m_flag() == 0) {
+		ROR_16(access_address_from_bank(data_bank_register, absolute_indexed_x()));
+	}
+	else {
+		ROR_8(access_address_from_bank(data_bank_register, absolute_indexed_x()));
+	}
+	program_counter += 3;
+}
+
 #pragma endregion
 
 #pragma region returns
 //RTI	40	Stack(RTI)	NVMXDIZC	1
 void f40_RTI(){
-	p_register = pull_from_stack_16(stack);
-	if (m_flag == 0) {
-		uint16_t pc_addr = pull_from_stack_16(stack);
-		uint32_t bank = pull_from_stack_8(stack);
+	p_register = pull_from_stack_16(&stack);
+	if (m_flag() == 0) {
+		uint16_t pc_addr = pull_from_stack_16(&stack);
+		uint32_t bank = pull_from_stack_8(&stack);
 		bank <<= 16;
 		bank |= pc_addr;
 		program_counter = bank;
 	}
 	else {
-		uint16_t pc_addr = pull_from_stack_16(stack);
+		uint16_t pc_addr = pull_from_stack_16(&stack);
 		uint32_t bank = program_bank_register;
 		bank |= pc_addr;
 		program_counter = bank;
@@ -2766,72 +2947,205 @@ void f40_RTI(){
 
 //RTL	6B	Stack(RTL)		1
 void f6B_RTL(){
-	uint16_t addr = pull_from_stack_16(stack) + 1;
-	uint32_t bank = pull_from_stack_8(stack);
-	uint32_t pc_addr = bank | (uint32_t)addr;
+	uint16_t addr = pull_from_stack_16(&stack) + 1;
+	uint32_t bank = pull_from_stack_8(&stack);
+	uint32_t pc_addr = bank << 16 | (uint32_t)addr;
 	program_counter = pc_addr;
 }
 
 //RTS	60	Stack(RTS)		1
 void f60_RTS(){
-	uint16_t addr = pull_from_stack_16(stack) + 1;
+	uint16_t addr = pull_from_stack_16(&stack) + 1;
 	program_counter = program_bank_register | (uint32_t)addr;
 }
 
 #pragma endregion
 
 #pragma region SBC
+void SBC_8(uint8_t val) {
+	accumulator = accumulator - val + (p_register & CARRY_FLAG);
+	set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+}
+
+void SBC_16(uint16_t val) {
+	accumulator = accumulator - val + (p_register & CARRY_FLAG);
+	set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+}
+
 //SBC(_dp, _X)	E1	DP Indexed Indirect, X	NV— - ZC	2
-void fE1_SBC(){}
+void fE1_SBC(){
+	if (m_flag() == 0) {
+		SBC_16(direct_indexed_indirect_16());
+	}
+	else {
+		SBC_8(direct_indexed_indirect_8());
+	}
+	program_counter += 2;
+
+}
 
 //SBC sr, S	E3	Stack Relative	NV— - ZC	2
-void fE3_SBC(){}
+void fE3_SBC(){
+	if (m_flag() == 0) {
+		SBC_16(stack_relative_16());
+	}
+	else {
+		SBC_8(stack_relative_8());
+	}
+	program_counter += 2;
+}
 
 //SBC dp	E5	Direct Page	NV— - ZC	2
-void fE5_SBC(){}
+void fE5_SBC(){
+	if (m_flag() == 0) {
+		SBC_16(direct_16());
+	}
+	else {
+		SBC_8(direct_8());
+	}
+	program_counter += 2;
+}
 
 //SBC[_dp_]	E7	DP Indirect Long	NV— - ZC	2
-void fE7_SBC(){}
+void fE7_SBC(){
+	if (m_flag() == 0) {
+		SBC_16(direct_indirect_long_16());
+	}
+	else {
+		SBC_8(direct_indirect_long_8());
+	}
+	program_counter += 2;
+}
 
 //SBC #const	E9	Immediate	NV— - ZC	2
-void fE9_SBC(){}
+void fE9_SBC(){
+	if (m_flag() == 0) {
+		SBC_16(immediate_16());
+		program_counter += 3;
+	}
+	else {
+		SBC_8(immediate_8());
+		program_counter += 2;
+	}
+	
+}
 
 //SBC addr	ED	Absolute	NV— - ZC	3
-void fED_SBC(){}
+void fED_SBC(){
+	if (m_flag() == 0) {
+		SBC_16(absolute_16());
+	}
+	else {
+		SBC_8(absolute_8());
+	}
+	program_counter += 3;
+}
 
 //SBC long	EF	Absolute Long	NV— - ZC	4
-void fEF_SBC(){}
+void fEF_SBC(){
+	if (m_flag() == 0) {
+		SBC_16(absolute_long_16());
+	}
+	else {
+		SBC_8(absolute_long_8());
+	}
+	program_counter += 4;
+}
 
 //SBC(_dp_), Y	F1	DP Indirect Indexed, Y	NV— - ZC	2
-void fF1_SBC(){}
+void fF1_SBC(){
+	if (m_flag() == 0) {
+		SBC_16(direct_indirect_indexed_16());
+	}
+	else {
+		SBC_8(direct_indirect_indexed_8());
+	}
+	program_counter += 2;
+}
 
 //SBC(_dp_)	F2	DP Indirect	NV— - ZC	2
-void fF2_SBC(){}
+void fF2_SBC(){
+	if (m_flag() == 0) {
+		SBC_16(direct_indirect_16());
+	}
+	else {
+		SBC_8(direct_indirect_8());
+	}
+	program_counter += 2;
+}
 
 //SBC(_sr_, S), Y	F3	SR Indirect Indexed, Y	NV— - ZC	2
-void fF3_SBC(){}
+void fF3_SBC(){
+	if (m_flag() == 0) {
+		SBC_16(stack_relative_indirect_indexed_16());
+	}
+	else {
+		SBC_8(stack_relative_indirect_indexed_8());
+	}
+	program_counter += 2;
+}
 
 //SBC dp, X	F5	DP Indexed, X	NV— - ZC	2
-void fF5_SBC(){}
+void fF5_SBC(){
+	if (m_flag() == 0) {
+		SBC_16(direct_indexed_x_16());
+	}
+	else {
+		SBC_8(direct_indexed_x_8());
+	}
+	program_counter += 2;
+}
 
 //SBC[_dp_], Y	F7	DP Indirect Long Indexed, Y	NV— - ZC	2
-void fF7_SBC(){}
+void fF7_SBC(){
+	if (m_flag() == 0) {
+		SBC_16(direct_indirect_indexed_long_16());
+	}
+	else {
+		SBC_8(direct_indirect_indexed_long_8());
+	}
+	program_counter += 2;
+}
 
 //SBC addr, Y	F9	Absolute Indexed, Y	NV— - ZC	3
-void fF9_SBC(){}
+void fF9_SBC(){
+	if (m_flag() == 0) {
+		SBC_16(absolute_indexed_y_16());
+	}
+	else {
+		SBC_8(absolute_indexed_y_8());
+	}
+	program_counter += 3;
+}
 
 //SBC addr, X	FD	Absolute Indexed, X	NV— - ZC	3
-void fFD_SBC(){}
+void fFD_SBC(){
+	if (m_flag() == 0) {
+		SBC_16(absolute_indexed_x_16());
+	}
+	else {
+		SBC_8(absolute_indexed_x_8());
+	}
+	program_counter += 3;
+}
 
 //SBC long, X	FF	Absolute Long Indexed, X	NV— - ZC	4
-void fFF_SBC(){}
+void fFF_SBC(){
+	if (m_flag() == 0) {
+		SBC_16(absolute_indexed_long_16());
+	}
+	else {
+		SBC_8(absolute_indexed_long_8());
+	}
+	program_counter += 4;
+}
 #pragma endregion
 
 #pragma region p_register
 //REP #const	C2	Immediate	NVMXDIZC	2
 void fC2_REP() {
 	uint8_t operand = immediate_8();
-	p_register = p_register & !(operand);
+	p_register &= ~operand;
 	program_counter += 2;
 }
 
@@ -2864,17 +3178,17 @@ void fE2_SEP(){
 #pragma region store
 
 void STA_8(uint8_t* local_addr) {
-	store2Byte_local(local_addr, accumulator);
+	*local_addr = accumulator;
 }
 
 void STA_16(uint8_t* local_addr) {
-	*local_addr = accumulator;
+	store2Byte_local(local_addr, accumulator);
 }
 
 //STA(_dp, _X)	81	DP Indexed Indirect, X		2
 void f81_STA(){
 	uint8_t *addr = access_address(direct_indexed_indirect());
-	if (m_flag == 0)
+	if (m_flag() == 0)
 		STA_16(addr);
 	else
 		STA_8(addr);
@@ -2885,7 +3199,7 @@ void f81_STA(){
 //STA sr, S	83	Stack Relative		2
 void f83_STA(){
 	uint8_t *addr = access_address_from_bank(data_bank_register >> 16 ,stack_relative());
-	if (m_flag == 0)
+	if (m_flag() == 0)
 		STA_16(addr);
 	else
 		STA_8(addr);
@@ -2896,7 +3210,7 @@ void f83_STA(){
 //STA dp	85	Direct Page		2
 void f85_STA(){
 	uint8_t *addr = access_address_from_bank(data_bank_register >> 16, direct());
-	if (m_flag == 0)
+	if (m_flag() == 0)
 		STA_16(addr);
 	else
 		STA_8(addr);
@@ -2905,84 +3219,243 @@ void f85_STA(){
 }
 
 //STA[_dp_]	87	DP Indirect Long		2
-void f87_STA(){}
+void f87_STA(){
+	uint8_t *addr = access_address(direct_indirect_long());
+	if (m_flag() == 0)
+		STA_16(addr);
+	else
+		STA_8(addr);
+
+	program_counter += 2;
+}
 
 //STA addr	8D	Absolute		3
 void f8D_STA(){
-	uint8_t *mem_mapped = access_address(program_counter + 1);
-	uint16_t addr = get2Byte(mem_mapped);
-	store2Byte(addr, accumulator);
+	uint8_t *addr = access_address(absolute());
+	if (m_flag() == 0)
+		STA_16(addr);
+	else
+		STA_8(addr);
+
 	program_counter += 3;
 }
 
 //STA long	8F	Absolute Long		4
 void f8F_STA(){
-	uint32_t operand = absolute_long();
-	uint8_t *addr = access_address(operand);
-	addr[0] = (uint8_t)(accumulator & 0xFF00);
-	addr[1] = (uint8_t)(accumulator & 0x00FF);
+	uint8_t *addr = access_address( absolute_long());
+	if (m_flag() == 0)
+		STA_16(addr);
+	else
+		STA_8(addr);
+
+	program_counter += 4;
 }
 
 //STA(_dp_), Y	91	DP Indirect Indexed, Y		2
-void f91_STA(){}
+void f91_STA(){
+	uint8_t *addr = access_address(direct_indirect_indexed());
+	if (m_flag() == 0)
+		STA_16(addr);
+	else
+		STA_8(addr);
+
+	program_counter += 2;
+}
 
 //STA(_dp_)	92	DP Indirect		2
-void f92_STA(){}
+void f92_STA(){
+	uint8_t *addr = access_address(direct_indirect_indexed());
+	if (m_flag() == 0)
+		STA_16(addr);
+	else
+		STA_8(addr);
+
+	program_counter += 2;
+}
 
 //STA(_sr_, S), Y	93	SR Indirect Indexed, Y		2
-void f93_STA(){}
+void f93_STA(){
+	uint8_t *addr = access_address(direct_indirect_indexed());
+	if (m_flag() == 0)
+		STA_16(addr);
+	else
+		STA_8(addr);
+
+	program_counter += 2;
+}
 
 //STA dpX	95	DP Indexed, X		2
-void f95_STA(){}
+void f95_STA(){
+	uint8_t *addr = access_address(direct_indexed_x());
+	if (m_flag() == 0)
+		STA_16(addr);
+	else
+		STA_8(addr);
+
+	program_counter += 2;
+}
 
 //STA[_dp_], Y	97	DP Indirect Long Indexed, Y		2
-void f97_STA(){}
+void f97_STA(){
+	uint8_t *addr = access_address(direct_indirect_indexed_long());
+	if (m_flag() == 0)
+		STA_16(addr);
+	else
+		STA_8(addr);
+
+	program_counter += 2;
+}
 
 //STA addr, Y	99	Absolute Indexed, Y		3
-void f99_STA(){}
+void f99_STA(){
+	uint8_t *addr = access_address_from_bank(data_bank_register >> 16, absolute_indexed_y());
+	if (m_flag() == 0)
+		STA_16(addr);
+	else
+		STA_8(addr);
+
+	program_counter += 3;
+}
 
 //STA addr, X	9D	Absolute Indexed, X		3
-void f9D_STA(){}
+void f9D_STA(){
+	uint8_t *addr = access_address_from_bank(data_bank_register >> 16, absolute_indexed_x());
+	if (m_flag() == 0)
+		STA_16(addr);
+	else
+		STA_8(addr);
+
+	program_counter += 3;
+}
 
 //STA long, X	9F	Absolute Long Indexed, X		4
-void f9F_STA(){}
+void f9F_STA(){
+	uint8_t *addr = access_address(absolute_indirect_long());
+	if (m_flag() == 0)
+		STA_16(addr);
+	else
+		STA_8(addr);
 
-//STP	DB	Implied		1
-void fDB_STP(){}
+	program_counter += 4;
+}
+
+void STN_8(uint8_t* local_addr, uint8_t val) {
+	*local_addr = val;
+}
+
+void STN_16(uint8_t* local_addr, uint16_t val) {
+	store2Byte_local(local_addr, val);
+}
 
 //STX dp	86	Direct Page		2
-void f86_STX(){}
+void f86_STX(){
+	uint8_t *addr = access_address_from_bank(data_bank_register, direct());
+	if (m_flag() == 0)
+		STN_16(addr, X);
+	else
+		STN_8(addr, X);
+
+	program_counter += 2;
+}
 
 //STX addr	8E	Absolute		3
-void f8E_STX(){}
+void f8E_STX(){
+	uint8_t *addr = access_address(absolute());
+	if (m_flag() == 0)
+		STN_16(addr, X);
+	else
+		STN_8(addr, X);
+
+	program_counter += 3;
+}
 
 //STX dp, Y	96	DP Indexed, Y		2
-void f96_STX(){}
+void f96_STX(){
+	uint8_t *addr = access_address(direct_indexed_y());
+	if (m_flag() == 0)
+		STN_16(addr, X);
+	else
+		STN_8(addr, X);
+
+	program_counter += 2;
+}
 
 //STY dp	84	Direct Page		2
-void f84_STY(){}
+void f84_STY(){
+	uint8_t *addr = access_address_from_bank(data_bank_register, direct());
+	if (m_flag() == 0)
+		STN_16(addr, Y);
+	else
+		STN_8(addr, Y);
+
+	program_counter += 2;
+}
 
 //STY addr	8C	Absolute		3
-void f8C_STY(){}
+void f8C_STY(){
+	uint8_t *addr = access_address(absolute());
+	if (m_flag() == 0)
+		STN_16(addr, Y);
+	else
+		STN_8(addr, Y);
+
+	program_counter += 3;
+}
 
 //STY dp, X	94	DP Indexed, X		2
-void f94_STY(){}
+void f94_STY(){
+	uint8_t *addr = access_address(direct_indexed_x());
+	if (m_flag() == 0)
+		STN_16(addr, Y);
+	else
+		STN_8(addr, Y);
+
+	program_counter += 2;
+}
 
 //STZ dp	64	Direct Page		2
-void f64_STZ(){}
+void f64_STZ(){
+	uint8_t *addr = access_address_from_bank(data_bank_register, direct());
+	if (m_flag() == 0)
+		STN_16(addr, 0x0000);
+	else
+		STN_8(addr, 0x0000);
+
+	program_counter += 2;
+}
 
 //STZ dp, X	74	DP Indexed, X		2
-void f74_STZ(){}
+void f74_STZ(){
+	uint8_t *addr = access_address(direct_indexed_x());
+	if (m_flag() == 0)
+		STN_16(addr, 0x0000);
+	else
+		STN_8(addr, 0x0000);
+
+	program_counter += 2;
+}
 
 //STZ addr	9C	Absolute		3
 void f9C_STZ(){
-	uint8_t *addr = access_address(get2Byte(access_address(program_counter + 1)));
-	store2Byte(addr, 0x0000);
+	uint8_t *addr = access_address(absolute());
+	if (m_flag() == 0)
+		STN_16(addr, 0x0000);
+	else
+		STN_8(addr, 0x0000);
+
 	program_counter += 3;
 }
 
 //STZ addr, X	9E	Absolute Indexed, X		3
-void f9E_STZ(){}
+void f9E_STZ(){
+	uint8_t *addr = access_address_from_bank(data_bank_register, absolute_indexed_x());
+	if (m_flag() == 0)
+		STN_16(addr, 0x0000);
+	else
+		STN_8(addr, 0x0000);
+
+	program_counter += 3;
+}
 
 #pragma endregion
 
@@ -2991,7 +3464,7 @@ void f9E_STZ(){}
 //TRB dp	14	Direct Page	——Z - 2
 void f14_TRB(){
 	uint8_t *local_addr = access_address_from_bank(data_bank_register, direct());
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		uint16_t val = get2Byte(local_addr);
 		val &= accumulator;
 		store2Byte(local_addr, val);
@@ -3007,7 +3480,7 @@ void f14_TRB(){
 //TRB addr	1C	Absolute	——Z - 3
 void f1C_TRB(){
 	uint8_t *local_addr = access_address(absolute());
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		uint16_t val = get2Byte(local_addr);
 		val &= accumulator;
 		store2Byte(local_addr, val);
@@ -3022,7 +3495,7 @@ void f1C_TRB(){
 //TSB dp	4	Direct Page	——Z - 2
 void f04_TSB(){
 	uint8_t *local_addr = access_address_from_bank(data_bank_register, direct());
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		uint16_t val = get2Byte(local_addr);
 		val |= accumulator;
 		store2Byte(local_addr, val);
@@ -3037,7 +3510,7 @@ void f04_TSB(){
 //TSB addr	0C	Absolute	——Z - 3
 void f0C_TSB(){
 	uint8_t *local_addr = access_address(absolute());
-	if (m_flag == 0) {
+	if (m_flag() == 0) {
 		uint16_t val = get2Byte(local_addr);
 		val |= accumulator;
 		store2Byte(local_addr, val);
@@ -3054,7 +3527,7 @@ void f0C_TSB(){
 //TAX	AA	Implied	N—–Z - 1
 void fAA_TAX() {
 	X = accumulator;
-	if (x_flag == 0)
+	if (x_flag() == 0)
 		set_p_register_16(X, NEGATIVE_FLAG, ZERO_FLAG);
 	else
 		set_p_register_8(X, NEGATIVE_FLAG, ZERO_FLAG);
@@ -3064,7 +3537,7 @@ void fAA_TAX() {
 //TAY	A8	Implied	N—–Z - 1
 void fA8_TAY() {
 	Y = accumulator;
-	if (x_flag == 0)
+	if (x_flag() == 0)
 		set_p_register_16(X, NEGATIVE_FLAG, ZERO_FLAG);
 	else
 		set_p_register_8(X, NEGATIVE_FLAG, ZERO_FLAG);
@@ -3145,6 +3618,9 @@ void fBB_TYX(){
 //WAI	CB	Implied		1
 void fCB_WAI(){}
 
+//STP	DB	Implied		1
+void fDB_STP() {}
+
 //WDM	42			2
 void f42_WDM(){}
 
@@ -3158,7 +3634,17 @@ void fEB_XBA(){
 
 //XCE	FB	Implied	–MX—CE	1
 void fFB_XCE(){
-	inEmulationMode = !inEmulationMode;
+	uint8_t carry_holder = p_register & CARRY_FLAG;
+	p_register &= !CARRY_FLAG;
+	p_register |= emulation_flag;
+	emulation_flag = carry_holder;
+	
+	if (emulation_flag == 0x0) {
+		inEmulationMode = 0;
+	}
+	else {
+		inEmulationMode = 1;
+	}
 	program_counter++;
 }
 

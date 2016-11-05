@@ -20,8 +20,7 @@ uint16_t data_bank_register;
 uint16_t program_bank_register;
 uint16_t direct_page;
 uint16_t X, Y;
-uint8_t m_flag;
-uint8_t x_flag;
+uint8_t emulation_flag; //emulation flag, lowest bit only
 
 #define CARRY_FLAG  0x1
 #define ZERO_FLAG 0x2
@@ -29,7 +28,8 @@ uint8_t x_flag;
 #define DECIMAL_FLAG 0x08
 #define OVERFLOW_FLAG 0x40
 #define NEGATIVE_FLAG 0x80
-
+#define M_FLAG 0x20
+#define X_FLAG 0x10
 
 #pragma endregion
 
