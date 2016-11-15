@@ -3,6 +3,7 @@
 #include "system.h"
 #include <string.h>
 #include <stdio.h>
+#include "exec_compare.h"
 
 _Bool inEmulationMode = 1, carryIsEmulationBit = 0;
 
@@ -28,8 +29,8 @@ uint32_t direct_indirect_long();
 uint32_t direct_indirect_indexed_long();
 
 uint32_t absolute();
-uint16_t absolute_indexed_x();
-uint16_t absolute_indexed_y();
+uint32_t absolute_indexed_x();
+uint32_t absolute_indexed_y();
 uint32_t absolute_long();
 uint32_t absolute_indexed_long();
 uint16_t absolute_indirect();
@@ -115,27 +116,71 @@ const char *byte_to_binary(uint8_t x) {
 	return b;
 }
 
+
+struct execution createEx() {
+	struct execution ex;
+	ex.program_bank_register = program_bank_register;
+	ex.program_counter = program_counter;
+	ex.accumulator = accumulator;
+	ex.X = X;
+	ex.Y = Y;
+	ex.emulation_mode = inEmulationMode ? 1 : 0;
+	ex.p_register = p_register;
+	return ex;
+}
+
 void execute_next_instruction() {
 	static int counter = 0;
 	counter++;
 	uint8_t *romLoc = getRomData();
-	uint8_t current_instruction = (uint8_t) *(access_address(program_counter));
-	printf("%03i | %06x | %02x | A:%04x | X:%04x | Y:%04x | P:%s\n", counter, program_counter, current_instruction, accumulator, X, Y, byte_to_binary(p_register));
-	(*instructions[current_instruction])();
+	uint32_t instruction_addr = getMappedInstructionAddr(program_bank_register, program_counter);
+//	uint8_t current_instruction = (uint8_t) *(access_address(instruction_addr));
+	instruction_addr &= ~0x800000;
+	uint8_t current_instruction = getRomData()[instruction_addr];
+	printf("%03i | %02x%04x | %02x | A:%04x | X:%04x | Y:%04x | P:%s\n", counter, program_bank_register, program_counter, current_instruction, accumulator, X, Y, byte_to_binary(p_register));
+	if (counter >= 8540) {
+		int hello = 0;
+	}
+	if (counter == 1)
+		start_comp();
+	struct execution currentEx = createEx();
+	uint8_t comparison = compare(currentEx);
+	if (comparison != 0) {
+		int hello = 0;
+	}
+
+	if (current_instruction == 0x80)
+		work_you_fuck();
+	else {
+		void(*next_instruction)() = *instructions[current_instruction];
+		next_instruction();
+	}
+	
+
 }
 
 void set_p_register_16(uint16_t val, uint8_t flags) {
 	if (val == 0)
 		p_register |= ZERO_FLAG & flags;
-	if (val & 0x80000000 == 1)
+	else
+		p_register &= ~(ZERO_FLAG & flags);
+
+	if (val & 0x8000)
 		p_register |= NEGATIVE_FLAG & flags;
+	else
+		p_register &= ~(NEGATIVE_FLAG & flags);
 
 }
 void set_p_register_8(uint8_t val, uint8_t flags) {
 	if (val == 0)
 		p_register |= ZERO_FLAG & flags;
-	if (val & 0x8000 == 1)
+	else
+		p_register &= ~(ZERO_FLAG & flags);
+
+	if (val & 0x80)
 		p_register |= NEGATIVE_FLAG & flags;
+	else
+		p_register &= ~(NEGATIVE_FLAG & flags);
 }
 int m_flag() {
 	uint8_t m_val = p_register & M_FLAG;
@@ -144,7 +189,6 @@ int m_flag() {
 	else
 		return 0;
 }
-
 int x_flag() {
 	uint8_t x_val = p_register & X_FLAG;
 	if (x_val > 0)
@@ -157,12 +201,14 @@ int x_flag() {
 #pragma region addressing_modes
 
 uint8_t immediate_8() {
-	uint8_t operand = (uint8_t) *(access_address(program_counter + 1));
+	uint32_t mapped_addr = getMappedInstructionAddr(program_bank_register, program_counter+1);
+	uint8_t operand = (uint8_t)getRomData()[mapped_addr];//*(access_address(mapped_addr));
 	return operand;
 }
 
 uint16_t immediate_16() {
-	uint8_t *addr = access_address(program_counter + 1);
+	uint32_t mapped_addr = getMappedInstructionAddr(program_bank_register, program_counter + 1);
+	uint8_t *addr = &getRomData()[mapped_addr];//access_address(mapped_addr);
 	uint16_t operand = addr[1];
 	operand = operand << 8;
 	operand = operand | addr[0];
@@ -197,30 +243,35 @@ uint32_t direct_indexed_y() {
 }
 uint32_t direct_indirect() {
 	uint32_t new_addr_addr = direct();
-	uint16_t new_addr = get2Byte(accessSystemRam()[new_addr_addr]);
+	uint16_t new_addr = get2Byte(&accessSystemRam()[new_addr_addr]);
 	return data_bank_register + new_addr;
 }
 uint32_t direct_indexed_indirect() {
 	uint8_t operand = immediate_8();
 	uint16_t dp_addr = operand + direct_page + X;
-	uint16_t new_addr = get2Byte(accessSystemRam()[dp_addr]);
+	uint16_t new_addr = get2Byte(&accessSystemRam()[dp_addr]);
 	return (uint32_t)(data_bank_register + new_addr);
 }
 uint32_t direct_indirect_indexed() {
 	uint8_t operand = immediate_8();
-	uint16_t base_addr = get2Byte(accessSystemRam()[direct_page + operand]);
+	uint16_t base_addr = get2Byte(&accessSystemRam()[direct_page + operand]);
 	uint32_t new_addr = data_bank_register + base_addr + Y;
 	return new_addr;
 }
 uint32_t direct_indirect_long() {
 	uint32_t new_addr_addr = direct();
-	uint32_t new_addr = get3Byte(accessSystemRam()[new_addr_addr]);
+	uint32_t new_addr = get3Byte(&accessSystemRam()[new_addr_addr]);
 	return new_addr;
 }
 uint32_t direct_indirect_indexed_long() {
 	uint8_t operand = immediate_8();
-	uint32_t new_addr = get3Byte(accessSystemRam()[direct_page + operand]);
-	return new_addr;
+	uint16_t base_addr = direct_page + operand;
+
+	uint8_t *pointer = access_address_from_bank(0x00, base_addr);
+	uint16_t new_addr = get2Byte(pointer);
+	uint8_t *dataLoc = access_address_from_bank(pointer[2], new_addr + Y);
+	return dataLoc;
+
 }
 
 uint32_t absolute() {
@@ -231,16 +282,23 @@ uint32_t absolute() {
 	return system_addr;
 }
 
-uint16_t absolute_indexed_x() {
-	return direct_page + immediate_16() + X;
+uint32_t absolute_indexed_x() {
+	uint32_t toRet = data_bank_register;
+	toRet <<= 16;
+	toRet |= direct_page + immediate_16();
+	return toRet + X;
 }
 
-uint16_t absolute_indexed_y() {
-	return direct_page + immediate_16() + Y;
+uint32_t absolute_indexed_y() {
+	uint32_t toRet = data_bank_register;
+	toRet <<= 16;
+	toRet |= (direct_page + immediate_16());
+	return toRet + Y;
 }
 
 uint32_t absolute_long() {
-	uint8_t *addr = access_address(program_counter + 1);
+	uint32_t mapped_addr = getMappedInstructionAddr(program_bank_register, program_counter + 1);
+	uint8_t *addr = &getRomData()[mapped_addr];//access_address(mapped_addr);
 	uint32_t operand = addr[2];
 	operand = operand << 8;
 	operand = operand | addr[1];
@@ -422,7 +480,7 @@ void populate_instructions() {
 	instructions[0x7E] = f7E_ROR;
 	instructions[0x7F] = f7F_ADC;
 	//
-	instructions[0x80] = f80_BRA;
+	instructions[0x80] = work_you_fuck;
 	instructions[0x81] = f81_STA;
 	instructions[0x82] = f82_BRL;
 	instructions[0x83] = f83_STA;
@@ -566,10 +624,11 @@ void populate_instructions() {
 uint8_t direct_8() {
 	uint16_t new_page = direct();
 	uint8_t data = accessSystemRam()[new_page];
+	return data;
 };
 uint16_t direct_16() {
 	uint16_t new_page = direct();
-	uint16_t data = get2Byte(accessSystemRam()[new_page]);
+	uint16_t data = get2Byte(&accessSystemRam()[new_page]);
 };
 
 uint8_t direct_indexed_x_8() {
@@ -640,13 +699,13 @@ uint16_t direct_indirect_long_16() {
 }
 
 uint8_t direct_indirect_indexed_long_8() {
-	uint32_t new_addr = direct_indirect_indexed_long();
-	uint8_t data = (uint8_t)*access_address(new_addr);
+	uint8_t* new_addr = direct_indirect_indexed_long();
+	uint8_t data = *new_addr;
 	return data;
 }
 uint16_t direct_indirect_indexed_long_16() {
-	uint32_t new_addr = direct_indirect_indexed_long();
-	uint16_t data = get2Byte(access_address(new_addr));
+	uint8_t* new_addr = direct_indirect_indexed_long();
+	uint16_t data = get2Byte(new_addr);
 	return data;
 }
 
@@ -657,6 +716,7 @@ uint8_t absolute_8() {
 }
 uint16_t absolute_16() {
 	uint32_t new_addr = absolute();
+	uint8_t *addr = access_address(new_addr);
 	uint16_t data = get2Byte(access_address(new_addr));
 	return data;
 }
@@ -791,125 +851,230 @@ uint16_t pull_from_stack_16(uint32_t *stack) {
 #pragma endregion
 
 #pragma region ADC
+int BCD_ADD_NYBBLE(uint8_t *reg, uint8_t toAdd) {
+	uint8_t reg_val = *reg;
+	uint8_t added = reg_val + toAdd;
+	uint8_t carry = added & 0x10;
+	if (added > 9) {
+		carry = 1;
+		added += 0x06;
+	}
+	added &= 0x0F;
+	*reg = added;
+	return carry;
+}
+
 void ADC_8(uint8_t toAdd) {
-	accumulator = accumulator + toAdd + (1 & p_register);
+	uint8_t d_on = p_register & DECIMAL_FLAG;
+	if (d_on > 0) {
+		uint8_t carry = p_register & CARRY_FLAG;
+		uint16_t sum = 0;
+		for (int i = 0; i < 2; i++) {
+			uint8_t reg = (accumulator & (0x000F << (i * 4))) >> i * 4;
+			uint8_t toAddy = (toAdd & (0x000F << (i * 4))) >> i * 4;
+			carry = BCD_ADD_NYBBLE(&reg, toAddy + carry);
+			uint16_t val = reg;
+			val <<= i * 4;
+			sum |= val;
+		}
+		accumulator = sum;
+		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		if (carry)
+			p_register |= CARRY_FLAG;
+		else
+			p_register &= ~CARRY_FLAG;
+	}
+	else {
+		accumulator = accumulator + toAdd + (1 & p_register);
+	}
+	set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 }
 void ADC_16(uint16_t toAdd) {
-	accumulator = accumulator + toAdd + (1 & p_register);
+	uint8_t d_on = p_register & DECIMAL_FLAG;
+	if (d_on > 0) {
+		uint8_t carry = p_register & CARRY_FLAG;
+		uint16_t sum = 0;
+		for (int i = 0; i < 4; i++) {
+			uint8_t reg = (accumulator & (0x000F << (i * 4))) >> i * 4;
+			uint8_t toAddy = (toAdd & (0x000F << (i * 4))) >> i * 4;
+			carry = BCD_ADD_NYBBLE(&reg, toAddy + carry);
+			uint16_t val = reg;
+			val <<= i * 4;
+			sum |= val;
+		}
+		accumulator = sum;
+		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		if (carry)
+			p_register |= CARRY_FLAG;
+		else
+			p_register &= ~CARRY_FLAG;
+	}
+	else
+		accumulator = accumulator + toAdd + (1 & p_register);
 }
 //ADC(_dp_, X)	61	DP Indexed Indirect, X	NV— - ZC	2
 void f61_ADC(){
-	ADC_8(direct_indexed_indirect_8);
+	if (m_flag() == 0) {
+		ADC_16(direct_indexed_indirect_16());
+	}
+	else {
+		ADC_16(direct_indexed_indirect_8());
+	}
 	program_counter += 2;
 }
 
 //ADC sr, S	63	Stack Relative	NV— - ZC	2
 void f63_ADC(){
-	uint16_t stack_addr = stack_relative();
-	uint8_t data = accessSystemRam()[stack_addr];
-	ADC_8(data);
+	if (m_flag() == 0) {
+		ADC_16(stack_relative_16());
+	}
+	else {
+		ADC_16(stack_relative_8());
+	}
 	program_counter += 2;
 }
 
 //ADC dp	65	Direct Page	NV— - ZC	2
 void f65_ADC(){
-	uint16_t new_page = direct();
-	uint8_t data = accessSystemRam()[new_page];
-	ADC_8(data);
+	if (m_flag() == 0) {
+		ADC_16(direct_16());
+	}
+	else {
+		ADC_8(direct_8());
+	}
 	program_counter += 2;
 }
 
 //ADC[_dp_]	67	DP Indirect Long	NV— - ZC	2
 void f67_ADC(){
-	uint32_t new_addr = direct_indirect_long();
-	uint8_t data = (uint8_t) *access_address(new_addr);
-	ADC_8(data);
-	program_counter += 2;
+	if (m_flag() == 0) {
+		ADC_16(direct_indirect_long_16());
+	}
+	else {
+		ADC_8(direct_indirect_long_8());
+	}
+	program_counter += 3;
 }
 
 //ADC #const	69	Immediate	NV— - ZC	23
 void f69_ADC(){
-	ADC_8(immediate_8);
-	program_counter += 2;
+	if (m_flag() == 0) {
+		ADC_16(immediate_16());
+		program_counter += 3;
+	}
+	else {
+		ADC_8(immediate_8());
+		program_counter += 2;
+	}
 }
 
 //ADC addr	6D	Absolute	NV— - ZC	3
 void f6D_ADC(){
-	uint32_t new_addr = absolute();
-	uint8_t data = (uint8_t)*access_address(new_addr);
-	ADC_8(data);
+	if (m_flag() == 0) {
+		ADC_16(absolute_16());
+	}
+	else {
+		ADC_8(absolute_8());
+	}
 	program_counter += 3;
 }
 
 //ADC long	6F	Absolute Long	NV— - ZC	4
 void f6F_ADC(){
-	uint32_t new_addr = absolute_long();
-	uint8_t data = (uint8_t)*access_address(new_addr);
-	ADC_8(data);
+	if (m_flag() == 0) {
+		ADC_16(absolute_long_16());
+	}
+	else {
+		ADC_8(absolute_long_8());
+	}
 	program_counter += 4;
 }
 
 //ADC(dp), Y	71	DP Indirect Indexed, Y	NV— - ZC	2
 void f71_ADC(){
-	uint32_t new_addr = direct_indirect_indexed();
-	uint8_t data = (uint8_t)*access_address(new_addr);
-	ADC_8(data);
+	if (m_flag() == 0) {
+		ADC_16(direct_indexed_indirect_16());
+	}
+	else {
+		ADC_8(direct_indexed_indirect_8());
+	}
 	program_counter += 2;
 }
 
 //ADC(_dp_)	72	DP Indirect	NV— - ZC	2
 void f72_ADC(){
-	uint32_t new_addr = direct_indirect();
-	uint8_t data = (uint8_t)*access_address(new_addr);
-	ADC_8(data);
+	if (m_flag() == 0) {
+		ADC_16(direct_indirect_16());
+	}
+	else {
+		ADC_8(direct_indirect_8());
+	}
 	program_counter += 2;
 }
 
 //ADC(_sr_, S), Y	73	SR Indirect Indexed, Y	NV— - ZC	2
 void f73_ADC(){
-	uint32_t new_addr = stack_relative_indirect_indexed();
-	uint8_t data = (uint8_t)*access_address(new_addr);
-	ADC_8(data);
+	if (m_flag() == 0) {
+		ADC_16(stack_relative_indirect_indexed_16());
+	}
+	else {
+		ADC_8(stack_relative_indirect_indexed_8());
+	}
 	program_counter += 2;
 }
 
 //ADC dp, X	75	DP Indexed, X	NV— - ZC	2
 void f75_ADC(){
-	uint32_t new_addr = direct_indexed_x();
-	uint8_t data = (uint8_t)*access_address(new_addr);
-	ADC_8(data);
+	if (m_flag() == 0) {
+		ADC_16(direct_indexed_x_16());
+	}
+	else {
+		ADC_8(direct_indexed_x_8());
+	}
 	program_counter += 2;
 }
 
 //ADC[_dp_], Y	77	DP Indirect Long Indexed, Y	NV— - ZC	2
 void f77_ADC(){
-	uint32_t new_addr = direct_indirect_indexed_long();
-	uint8_t data = (uint8_t)*access_address(new_addr);
-	ADC_8(data);
+	if (m_flag() == 0) {
+		ADC_16(direct_indirect_indexed_long_16());
+	}
+	else {
+		ADC_8(direct_indirect_indexed_long_8());
+	}
 	program_counter += 2;
 }
 
 //ADC addr, Y	79	Absolute Indexed, Y	NV— - ZC	3
 void f79_ADC(){
-	uint32_t new_addr = absolute_indexed_y();
-	uint8_t data = (uint8_t)*access_address(new_addr);
-	ADC_8(data);
+	if (m_flag() == 0) {
+		ADC_16(absolute_indexed_y_16());
+	}
+	else {
+		ADC_8(absolute_indexed_y_8());
+	}
 	program_counter += 3;
 }
 
 //ADC addr, X	7D	Absolute Indexed, X	NV— - ZC	3
 void f7D_ADC(){
-	uint32_t new_addr = absolute_indexed_x();
-	uint8_t data = (uint8_t)*access_address(new_addr);
-	ADC_8(data);
+	if (m_flag() == 0) {
+		ADC_16(absolute_indexed_x_16());
+	}
+	else {
+		ADC_8(absolute_indexed_x_8());
+	}
 	program_counter += 3;
 }
 
 //ADC long, X	7F	Absolute Long Indexed, X	NV— - ZC	4
 void f7F_ADC(){
-	uint32_t new_addr = absolute_indexed_long();
-	uint8_t data = (uint8_t)*access_address(new_addr);
-	ADC_8(data);
+	if (m_flag() == 0) {
+		ADC_16(absolute_indexed_long_16());
+	}
+	else {
+		ADC_8(absolute_indexed_long_8());
+	}
 	program_counter += 4;
 }
 
@@ -917,11 +1082,14 @@ void f7F_ADC(){
 
 #pragma region AND
 void AND_8(uint8_t val) {
-	accumulator &= val;
+	uint16_t val2 = val;
+	accumulator &= (0xFF00 | val2);
+	set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 }
 
 void AND_16(uint16_t val) {
 	accumulator &= val;
+	set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 }
 
 //AND(_dp, _X)	21	DP Indexed Indirect, X	N—–Z - 2
@@ -955,7 +1123,7 @@ void f27_AND(){
 //AND #const	29	Immediate	N—–Z - 2
 void f29_AND(){
 	if (m_flag() == 0) {
-		uint8_t data = immediate_16();
+		uint16_t data = immediate_16();
 		AND_16(data);
 		program_counter += 3;
 	}
@@ -1088,33 +1256,35 @@ void f1E_ASL(){
 
 //BCC nearlabel	90	Program Counter Relative		2
 void f90_BCC(){
-	if (CARRY_FLAG & p_register == 1)
+	if (CARRY_FLAG & p_register)
 		program_counter += 2;
 	else {
 		char adjust = (char) immediate_8();
-		program_counter += adjust;
+		program_counter += adjust + 2;
 	}
 	return;
 }
 
 //BCS nearlabel	B0	Program Counter Relative		2
 void fB0_BCs(){
-	if (CARRY_FLAG & p_register == 0)
-		program_counter += 2;
-	else {
+	if (CARRY_FLAG & p_register) {
 		char adjust = (char)immediate_8();
-		program_counter += adjust;
+		program_counter += adjust + 2;
+	}
+	else {
+		program_counter += 2;
 	}
 	return;
 }
 
 //BEQ nearlabel	F0	Program Counter Relative		2
 void fF0_BEQ(){
-	if (ZERO_FLAG & p_register == 0)
+	uint8_t res = p_register & ZERO_FLAG;
+	if (res == 0)
 		program_counter += 2;
 	else {
 		char adjust = (char)immediate_8();
-		program_counter += adjust;
+		program_counter += adjust + 2;
 	}
 	return;
 }
@@ -1175,22 +1345,23 @@ void f30_BMI(){
 
 //BNE nearlabel	D0	Program Counter Relative		2
 void fD0_BNE(){
-	if (ZERO_FLAG & p_register == 1)
+	uint16_t andRes = ZERO_FLAG & p_register;
+	if (andRes != 0)
 		program_counter += 2;
 	else {
 		char adjust = (char)immediate_8();
-		program_counter += adjust;
+		program_counter += adjust + 2;
 	}
 	return;
 }
 
 //BPL nearlabel	10	Program Counter Relative		2
 void f10_BPL(){
-	if (NEGATIVE_FLAG & p_register == 1)
+	if (NEGATIVE_FLAG & p_register)
 		program_counter += 2;
 	else {
 		char adjust = (char)immediate_8();
-		program_counter += adjust;
+		program_counter += 2 + adjust;
 	}
 	return;
 }
@@ -1198,13 +1369,27 @@ void f10_BPL(){
 //BRA nearlabel	80	Program Counter Relative		2
 void f80_BRA(){
 	char adjust = (char)immediate_8();
-	program_counter += adjust;
+	program_counter += adjust + 2;
+	return;
+}
+
+//BRA nearlabel	80	Program Counter Relative		2
+void f80_BRA2() {
+	char adjust = (char)immediate_8();
+	program_counter += adjust + 2;
+	return;
+}
+
+void work_you_fuck() {
+	char adjust = (char)immediate_8();
+	program_counter += adjust + 2;
+	return;
 }
 
 //BRK	0	Stack / Interrupt	— - DI–	28
 void f00_BRK(){
 	call_stack[cs_counter++] = program_counter = 2;
-	program_counter = 0x00FFE6;
+	program_counter = 0xFFE6;
 }
 
 //BRL label	82	Program Counter Relative Long		3
@@ -1237,60 +1422,64 @@ void f70_BVS(){
 
 //CLC	18	Implied	—— - C	1
 void f18_CLC(){
-	p_register = p_register & !(CARRY_FLAG);
+	p_register = p_register & ~CARRY_FLAG;
+	program_counter++;
 }
 
 //CLD	D8	Implied	— - D—	1
 void fD8_CLD(){
-	p_register = p_register & !(DECIMAL_FLAG);
+	p_register = p_register & ~DECIMAL_FLAG;
+	program_counter++;
 }
 
 //CLI	58	Implied	—–I–	1
 void f58_CLI(){
-	p_register = p_register & !(INTERRUPT_FLAG);
+	p_register = p_register & ~INTERRUPT_FLAG;
+	program_counter++;
 }
 
 //CLV	B8	Implied	#NAME ? 1
 void fB8_CLV(){
-	p_register = p_register & !(OVERFLOW_FLAG);
+	p_register = p_register & ~OVERFLOW_FLAG;
+	program_counter++;
 }
 
 #pragma region cmp
 
 void CMP_8(uint8_t reg, uint8_t data) {
-	uint8_t result = data - reg;
-	if (result = 0)
+	uint8_t result = reg - data;
+	if (result == 0)
 		p_register |= ZERO_FLAG;
 	else
-		p_register &= !ZERO_FLAG;
+		p_register &= ~ZERO_FLAG;
 
-	if (result & 0x8000 == 1)
+	if (result & 0x80)
 		p_register |= NEGATIVE_FLAG;
 	else
-		p_register &= !NEGATIVE_FLAG;
+		p_register &= ~NEGATIVE_FLAG;
 
 	if(reg >= data)
 		p_register |= CARRY_FLAG;
 	else
-		p_register &= !CARRY_FLAG;
+		p_register &= ~CARRY_FLAG;
 }
 
 void CMP_16(uint16_t reg, uint16_t data) {
-	uint16_t result = data - reg;
-	if (result = 0)
+	uint16_t result = reg - data;
+	if (result == 0)
 		p_register |= ZERO_FLAG;
 	else
-		p_register &= !ZERO_FLAG;
+		p_register &= ~ZERO_FLAG;
 
-	if (result & 0x80000000 == 1)
+	if (result & 0x8000)
 		p_register |= NEGATIVE_FLAG;
 	else
-		p_register &= !NEGATIVE_FLAG;
+		p_register &= ~NEGATIVE_FLAG;
 
 	if (reg >= data)
 		p_register |= CARRY_FLAG;
 	else
-		p_register &= !CARRY_FLAG;
+		p_register &= ~CARRY_FLAG;
 }
 
 //CMP(_dp, _X)	C1	DP Indexed Indirect, X	N—–ZC	2
@@ -1528,7 +1717,7 @@ void fEC_CPX(){
 		uint8_t val = absolute_8();
 		CMP_8(X, val);
 	}
-	program_counter += 2;
+	program_counter += 3;
 }
 
 //CPY #const	C0	Immediate	N—–ZC	2
@@ -1575,8 +1764,8 @@ void fCC_CPY(){
 
 //COP const	2	Stack / Interrupt	— - DI–	2
 void f02_COP() {
-	call_stack[cs_counter++] = program_counter = 2;
-	program_counter = 0x00FFE4;
+	call_stack[cs_counter++] = program_counter;
+	program_counter = 0xFFE4;
 }
 
 #pragma region INC_DEC
@@ -1595,6 +1784,12 @@ void DEC_16(uint8_t* local_address) {
 
 void DEC(uint8_t* local_address) {
 	if (m_flag() == 0)
+		DEC_16(local_address);
+	else
+		DEC_8(local_address);
+}
+void DECX(uint8_t* local_address) {
+	if (x_flag() == 0)
 		DEC_16(local_address);
 	else
 		DEC_8(local_address);
@@ -1640,13 +1835,13 @@ void fDE_DEC(){
 
 //DEX	CA	Implied	N—–Z - 1
 void fCA_DEX(){
-	DEC(&X);
+	DECX(&X);
 	program_counter += 1;
 }
 
 //DEY	88	Implied	N—–Z - 1
 void f88_DEY(){
-	DEC(&Y);
+	DECX(&Y);
 	program_counter += 1;
 }
 
@@ -1664,6 +1859,12 @@ void INC_16(uint8_t* local_address) {
 
 void INC(uint8_t* local_address) {
 	if (m_flag() == 0)
+		INC_16(local_address);
+	else
+		INC_8(local_address);
+}
+void INCX(uint8_t* local_address) {
+	if (x_flag() == 0)
 		INC_16(local_address);
 	else
 		INC_8(local_address);
@@ -1709,13 +1910,13 @@ void fFE_INC() {
 
 //INX	E8	Implied	N—–Z - 1
 void fE8_INX() {
-	INC(&X);
+	INCX(&X);
 	program_counter += 1;
 }
 
 //INY	C8	Implied	N—–Z - 1
 void fC8_INY() {
-	INC(&Y);
+	INCX(&Y);
 	program_counter += 1;
 }
 #pragma endregion
@@ -1914,9 +2115,9 @@ void f5F_EOR(){
 #pragma region JMP
 //JMP addr	4C	Absolute		3
 void f4C_JMP(){
-	uint32_t operand = absolute_long_16();
+	uint16_t operand = immediate_16();
 	program_counter = program_bank_register;
-	program_counter << 16;
+	program_counter <<= 16;
 	program_counter |= operand;
 }
 
@@ -1924,46 +2125,51 @@ void f4C_JMP(){
 void f5C_JMP(){
 	uint32_t operand = absolute_long();
 	program_counter = operand;
+	operand >>= 16;
+	program_bank_register = operand;
 }
 
 //JMP(_addr_)	6C	Absolute Indirect		3
 void f6C_JMP(){
 	uint16_t operand = absolute_indirect_16();
-	program_counter = program_bank_register;
-	program_counter << 16;
-	program_counter |= operand;
+	program_counter = operand;
+	operand >>= 16;
+	program_bank_register = operand;
 }
 
 //JMP(_addr, X_)	7C	Absolute Indexed Indirect		3
 void f7C_JMP(){
 	uint16_t operand = absolute_indexed_indirect_16();
-	program_counter = program_bank_register;
-	program_counter << 16;
-	program_counter |= operand;
+	program_counter = operand;
+	operand >>= 16;
+	program_bank_register = operand;
 }
 
 //JMP[addr]	DC	Absolute Indirect Long		3
 void fDC_JMP(){
 	uint32_t operand = absolute_indirect_long_32();
 	program_counter = operand;
+	operand >>= 16;
+	program_bank_register = operand;
 }
 
 //JSR addr	20	Absolute		3
 void f20_JSR(){
 	uint16_t operand = absolute();
 	push_to_stack_16(program_counter + 2, &stack);
-	program_counter &= 0xFFFF0000;
-	program_counter |= operand;
+	program_counter = operand;
 }
 
 //JSR or JSL long	22	Absolute Long		4
 void f22_JSR(){
 	uint32_t operand = absolute_long();
-	uint8_t pbr = program_counter >> 16;
+	uint8_t pbr = program_bank_register;
 	push_to_stack_8(pbr, &stack);
 	uint16_t addr = program_counter;
 	push_to_stack_16(addr + 3, &stack);
 	program_counter = operand;
+	operand >>= 16;
+	program_bank_register = operand;
 
 }
 
@@ -1971,22 +2177,29 @@ void f22_JSR(){
 void fFC_JSR(){
 	uint16_t operand = absolute_indexed_indirect_16();
 	push_to_stack_16(program_counter + 2, &stack);
-	program_counter = program_bank_register;
-	program_counter << 16;
-	program_counter |= operand;
+	program_counter = operand;
 }
 #pragma endregion
 
 #pragma region LD
+
+void LDA_8(uint8_t val) {
+	accumulator &= 0xFF00;
+	accumulator |= val;
+	set_p_register_8(val, NEGATIVE_FLAG | ZERO_FLAG);
+}
+void LDA_16(uint16_t val) {
+	accumulator = val;
+	set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+}
+
 //LDA(_dp, _X)	A1	DP Indexed Indirect, X	N—–Z - 2
 void fA1_LDA(){
 	if (m_flag() == 0) {
-		accumulator = direct_indexed_indirect_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_16(direct_indexed_indirect_16());
 	}
 	else {
-		accumulator = direct_indexed_indirect_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_8(direct_indexed_indirect_8());
 		
 	}
 	program_counter += 2;
@@ -1995,13 +2208,10 @@ void fA1_LDA(){
 //LDA sr, S	A3	Stack Relative	N—–Z - 2
 void fA3_LDA(){
 	if (m_flag() == 0) {
-		accumulator = stack_relative_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_16(stack_relative_16());
 	}
 	else {
-		accumulator = stack_relative_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-
+		LDA_8(stack_relative_8());
 	}
 	program_counter += 2; 
 }
@@ -2009,12 +2219,11 @@ void fA3_LDA(){
 //LDA dp	A5	Direct Page	N—–Z - 2
 void fA5_LDA(){
 	if (m_flag() == 0) {
-		accumulator = direct_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_16(direct_16());
 	}
 	else {
-		accumulator = direct_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		uint8_t val = direct_8();
+		LDA_8(val);
 
 	}
 	program_counter += 2;
@@ -2023,13 +2232,10 @@ void fA5_LDA(){
 //LDA[_dp_]	A7	DP Indirect Long	N—–Z - 2
 void fA7_LDA(){
 	if (m_flag() == 0) {
-		accumulator = direct_indirect_long_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_16(direct_indirect_long_16());
 	}
 	else {
-		accumulator = direct_indirect_long_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-
+		LDA_8(direct_indirect_long_8());
 	}
 	program_counter += 2;
 }
@@ -2037,14 +2243,11 @@ void fA7_LDA(){
 //LDA #const	A9	Immediate	N—–Z - 2
 void fA9_LDA(){
 	if (m_flag() == 0) {
-		accumulator = immediate_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_16(immediate_16());
 		program_counter += 3;
 	}
 	else {
-		accumulator &= 0xFF00;
-		accumulator |= immediate_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_8(immediate_8());
 		program_counter += 2;
 	}
 	
@@ -2053,13 +2256,10 @@ void fA9_LDA(){
 //LDA addr	AD	Absolute	N—–Z - 3
 void fAD_LDA(){
 	if (m_flag() == 0) {
-		accumulator = absolute_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_16(absolute_16());
 	}
 	else {
-		accumulator = absolute_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-
+		LDA_8(absolute_8());
 	}
 	program_counter += 3;
 }
@@ -2067,13 +2267,10 @@ void fAD_LDA(){
 //LDA long	AF	Absolute Long	N—–Z - 4
 void fAF_LDA(){
 	if (m_flag() == 0) {
-		accumulator = absolute_long_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_16(absolute_long_16());
 	}
 	else {
-		accumulator = absolute_long_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-
+		LDA_8(absolute_long_8());
 	}
 	program_counter += 4;
 }
@@ -2081,13 +2278,10 @@ void fAF_LDA(){
 //LDA(_dp_), Y	B1	DP Indirect Indexed, Y	N—–Z - 2
 void fB1_LDA(){
 	if (m_flag() == 0) {
-		accumulator = direct_indexed_indirect_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_16(direct_indexed_indirect_16());
 	}
 	else {
-		accumulator = direct_indexed_indirect_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-
+		LDA_8(direct_indexed_indirect_8());
 	}
 	program_counter += 2;
 }
@@ -2095,12 +2289,10 @@ void fB1_LDA(){
 //LDA(_dp_)	B2	DP Indirect	N—–Z - 2
 void fB2_LDA(){
 	if (m_flag() == 0) {
-		accumulator = direct_indirect_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_16(direct_indirect_16());
 	}
 	else {
-		accumulator = direct_indirect_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_8(direct_indirect_8());
 
 	}
 	program_counter += 2;
@@ -2109,12 +2301,10 @@ void fB2_LDA(){
 //LDA(_sr_, S), Y	B3	SR Indirect Indexed, Y	N—–Z - 2
 void fB3_LDA(){
 	if (m_flag() == 0) {
-		accumulator = stack_relative_indirect_indexed_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_16(stack_relative_indirect_indexed_16());
 	}
 	else {
-		accumulator = stack_relative_indirect_indexed_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_8(stack_relative_indirect_indexed_8());
 
 	}
 	program_counter += 2;
@@ -2123,12 +2313,10 @@ void fB3_LDA(){
 //LDA dp, X	B5	DP Indexed, X	N—–Z - 2
 void fB5_LDA(){
 	if (m_flag() == 0) {
-		accumulator = direct_indexed_x_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_16(direct_indexed_x_16());
 	}
 	else {
-		accumulator = direct_indexed_x_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_8(direct_indexed_x_8());
 
 	}
 	program_counter += 2;
@@ -2137,13 +2325,10 @@ void fB5_LDA(){
 //LDA[_dp_], Y	B7	DP Indirect Long Indexed, Y	N—–Z - 2
 void fB7_LDA(){
 	if (m_flag() == 0) {
-		accumulator = direct_indirect_indexed_long_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_16(direct_indirect_indexed_long_16());
 	}
 	else {
-		accumulator = direct_indirect_indexed_long_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-
+		LDA_8(direct_indirect_indexed_long_8());
 	}
 	program_counter += 2;
 }
@@ -2151,12 +2336,10 @@ void fB7_LDA(){
 //LDA addr, Y	B9	Absolute Indexed, Y	N—–Z - 3
 void fB9_LDA(){
 	if (m_flag() == 0) {
-		accumulator = absolute_indexed_y_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_16(absolute_indexed_y_16());
 	}
 	else {
-		accumulator = absolute_indexed_y_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_8(absolute_indexed_y_8());
 
 	}
 	program_counter += 3;
@@ -2165,12 +2348,10 @@ void fB9_LDA(){
 //LDA addr, X	BD	Absolute Indexed, X	N—–Z - 3
 void fBD_LDA(){
 	if (m_flag() == 0) {
-		accumulator = absolute_indexed_x_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_16(absolute_indexed_x_16());
 	}
 	else {
-		accumulator = absolute_indexed_x_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_8(absolute_indexed_x_8());
 
 	}
 	program_counter += 3;
@@ -2179,13 +2360,10 @@ void fBD_LDA(){
 //LDA long, X	BF	Absolute Long Indexed, X	N—–Z - 4
 void fBF_LDA(){
 	if (m_flag() == 0) {
-		accumulator = absolute_indexed_long_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		LDA_16(absolute_indexed_long_16());
 	}
 	else {
-		accumulator = absolute_indexed_long_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-
+		LDA_8(absolute_indexed_long_8());
 	}
 	program_counter += 4;
 }
@@ -2194,12 +2372,12 @@ void fBF_LDA(){
 void fA2_LDX(){
 	if (x_flag() == 0) {
 		X = immediate_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_16(X, NEGATIVE_FLAG | ZERO_FLAG);
 		program_counter += 3;
 	}
 	else {
 		X = immediate_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_8(X, NEGATIVE_FLAG | ZERO_FLAG);
 		program_counter += 2;
 	}
 	
@@ -2209,11 +2387,11 @@ void fA2_LDX(){
 void fA6_LDX(){
 	if (x_flag() == 0) {
 		X = direct_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_16(X, NEGATIVE_FLAG | ZERO_FLAG);
 	}
 	else {
 		X = direct_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_8(X, NEGATIVE_FLAG | ZERO_FLAG);
 
 	}
 	program_counter += 2;
@@ -2223,11 +2401,11 @@ void fA6_LDX(){
 void fAE_LDX(){
 	if (x_flag() == 0) {
 		X = absolute_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_16(X, NEGATIVE_FLAG | ZERO_FLAG);
 	}
 	else {
 		X = absolute_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_8(X, NEGATIVE_FLAG | ZERO_FLAG);
 
 	}
 	program_counter += 3;
@@ -2237,11 +2415,11 @@ void fAE_LDX(){
 void fB6_LDX(){
 	if (x_flag() == 0) {
 		X = direct_indexed_y_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_16(X, NEGATIVE_FLAG | ZERO_FLAG);
 	}
 	else {
 		X = direct_indexed_y_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_8(X, NEGATIVE_FLAG | ZERO_FLAG);
 
 	}
 	program_counter += 2;
@@ -2251,26 +2429,26 @@ void fB6_LDX(){
 void fBE_LDX(){
 	if (x_flag() == 0) {
 		X = absolute_indexed_y_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_16(X, NEGATIVE_FLAG | ZERO_FLAG);
 	}
 	else {
 		X = absolute_indexed_y_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_8(X, NEGATIVE_FLAG | ZERO_FLAG);
 
 	}
-	program_counter += 2;
+	program_counter += 3;
 }
 
 //LDY #const	A0	Immediate	N—–Z - 2
 void fA0_LDY(){
 	if (x_flag() == 0) {
 		Y = immediate_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_16(Y, NEGATIVE_FLAG | ZERO_FLAG);
 		program_counter += 3;
 	}
 	else {
 		Y = immediate_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_8(Y, NEGATIVE_FLAG | ZERO_FLAG);
 		program_counter += 2;
 
 	}
@@ -2280,11 +2458,11 @@ void fA0_LDY(){
 void fA4_LDY(){
 	if (x_flag() == 0) {
 		Y = direct_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_16(Y, NEGATIVE_FLAG | ZERO_FLAG);
 	}
 	else {
 		Y = direct_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_8(Y, NEGATIVE_FLAG | ZERO_FLAG);
 
 	}
 	program_counter += 2;
@@ -2294,11 +2472,11 @@ void fA4_LDY(){
 void fAC_LDY(){
 	if (x_flag() == 0) {
 		Y = absolute_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_16(Y, NEGATIVE_FLAG | ZERO_FLAG);
 	}
 	else {
 		Y = absolute_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_8(Y, NEGATIVE_FLAG | ZERO_FLAG);
 
 	}
 	program_counter += 3;
@@ -2308,11 +2486,11 @@ void fAC_LDY(){
 void fB4_LDY(){
 	if (x_flag() == 0) {
 		Y = direct_indexed_x_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_16(Y, NEGATIVE_FLAG | ZERO_FLAG);
 	}
 	else {
 		Y = direct_indexed_x_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_8(Y, NEGATIVE_FLAG | ZERO_FLAG);
 
 	}
 	program_counter += 2;
@@ -2322,11 +2500,11 @@ void fB4_LDY(){
 void fBC_LDY(){
 	if (x_flag() == 0) {
 		Y = absolute_indexed_x_16();
-		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_16(Y, NEGATIVE_FLAG | ZERO_FLAG);
 	}
 	else {
 		Y = absolute_indexed_x_8();
-		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+		set_p_register_8(Y, NEGATIVE_FLAG | ZERO_FLAG);
 
 	}
 	program_counter += 3;
@@ -2409,16 +2587,17 @@ void f54_MVN(){
 	program_counter++;
 	uint8_t dest_blk = immediate_8();
 	uint16_t dest_addr = Y;
-	
+	program_counter--;
+
 	uint8_t *src_addr_local = access_address_from_bank(src_blk, src_addr);
 	uint8_t *dest_addr_local = access_address_from_bank(dest_blk, dest_addr);
 
-	memcpy(dest_addr_local, src_addr_local, bytes_to_move);
-	accumulator = 0xFFFF;
-	X += bytes_to_move;
-	Y += bytes_to_move;
-
-	program_counter += 2;
+	memcpy(dest_addr_local, src_addr_local, 1);
+	X++;
+	Y++;
+	accumulator--;
+	if(accumulator == 0xFFFF)
+		program_counter += 3;
 }
 
 //MVP srcbk, destbk	44	Block Move		3
@@ -2673,7 +2852,7 @@ void f0B_PHD(){
 
 //PHK	4B	Stack(Push)		1
 void f4B_PHK(){
-	push_to_stack_8((uint8_t) (program_counter >> 16), &stack);
+	push_to_stack_8((uint8_t) program_bank_register, &stack);
 	program_counter++;
 }
 
@@ -2773,8 +2952,8 @@ void f7A_PLY(){
 void ROL_8(uint8_t* addr) {
 	uint8_t val = *addr;
 	uint8_t c_flag = p_register & CARRY_FLAG;
-	uint8_t new_c_flag = val & 0x8000;
-	p_register &= !CARRY_FLAG | new_c_flag;
+	uint8_t new_c_flag = (val & 0x80) ? 0x01 : 0x00;
+	p_register &= ((~CARRY_FLAG) | new_c_flag);
 	val <<= 1;
 	val |= c_flag;
 	*addr = val;
@@ -2948,27 +3127,27 @@ void f40_RTI(){
 //RTL	6B	Stack(RTL)		1
 void f6B_RTL(){
 	uint16_t addr = pull_from_stack_16(&stack) + 1;
-	uint32_t bank = pull_from_stack_8(&stack);
-	uint32_t pc_addr = bank << 16 | (uint32_t)addr;
-	program_counter = pc_addr;
+	uint8_t bank = pull_from_stack_8(&stack);
+	program_bank_register = bank;
+	program_counter = addr;
 }
 
 //RTS	60	Stack(RTS)		1
 void f60_RTS(){
 	uint16_t addr = pull_from_stack_16(&stack) + 1;
-	program_counter = program_bank_register | (uint32_t)addr;
+	program_counter = addr;
 }
 
 #pragma endregion
 
 #pragma region SBC
 void SBC_8(uint8_t val) {
-	accumulator = accumulator - val + (p_register & CARRY_FLAG);
+	accumulator = accumulator - val - 1 + (p_register & CARRY_FLAG);
 	set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 }
 
 void SBC_16(uint16_t val) {
-	accumulator = accumulator - val + (p_register & CARRY_FLAG);
+	accumulator = accumulator - val - 1 + (p_register & CARRY_FLAG);
 	set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 }
 
@@ -3171,6 +3350,10 @@ void f78_SEI(){
 void fE2_SEP(){
 	uint8_t operand = immediate_8();
 	p_register |= operand;
+	if (operand & X_FLAG) {
+		X &= 0x00FF;
+		Y &= 0x00FF;
+	}
 	program_counter += 2;
 }
 #pragma endregion
@@ -3330,7 +3513,7 @@ void f9D_STA(){
 
 //STA long, X	9F	Absolute Long Indexed, X		4
 void f9F_STA(){
-	uint8_t *addr = access_address(absolute_indirect_long());
+	uint8_t *addr = access_address(absolute_indexed_long() );
 	if (m_flag() == 0)
 		STA_16(addr);
 	else
@@ -3349,8 +3532,8 @@ void STN_16(uint8_t* local_addr, uint16_t val) {
 
 //STX dp	86	Direct Page		2
 void f86_STX(){
-	uint8_t *addr = access_address_from_bank(data_bank_register, direct());
-	if (m_flag() == 0)
+	uint8_t *addr = access_address_from_bank(0x00, direct());
+	if (x_flag() == 0)
 		STN_16(addr, X);
 	else
 		STN_8(addr, X);
@@ -3361,7 +3544,7 @@ void f86_STX(){
 //STX addr	8E	Absolute		3
 void f8E_STX(){
 	uint8_t *addr = access_address(absolute());
-	if (m_flag() == 0)
+	if (x_flag() == 0)
 		STN_16(addr, X);
 	else
 		STN_8(addr, X);
@@ -3372,7 +3555,7 @@ void f8E_STX(){
 //STX dp, Y	96	DP Indexed, Y		2
 void f96_STX(){
 	uint8_t *addr = access_address(direct_indexed_y());
-	if (m_flag() == 0)
+	if (x_flag() == 0)
 		STN_16(addr, X);
 	else
 		STN_8(addr, X);
@@ -3382,8 +3565,8 @@ void f96_STX(){
 
 //STY dp	84	Direct Page		2
 void f84_STY(){
-	uint8_t *addr = access_address_from_bank(data_bank_register, direct());
-	if (m_flag() == 0)
+	uint8_t *addr = access_address_from_bank(0x00, direct());
+	if (x_flag() == 0)
 		STN_16(addr, Y);
 	else
 		STN_8(addr, Y);
@@ -3394,7 +3577,7 @@ void f84_STY(){
 //STY addr	8C	Absolute		3
 void f8C_STY(){
 	uint8_t *addr = access_address(absolute());
-	if (m_flag() == 0)
+	if (x_flag() == 0)
 		STN_16(addr, Y);
 	else
 		STN_8(addr, Y);
@@ -3405,7 +3588,7 @@ void f8C_STY(){
 //STY dp, X	94	DP Indexed, X		2
 void f94_STY(){
 	uint8_t *addr = access_address(direct_indexed_x());
-	if (m_flag() == 0)
+	if (x_flag() == 0)
 		STN_16(addr, Y);
 	else
 		STN_8(addr, Y);
@@ -3415,8 +3598,9 @@ void f94_STY(){
 
 //STZ dp	64	Direct Page		2
 void f64_STZ(){
-	uint8_t *addr = access_address_from_bank(data_bank_register, direct());
-	if (m_flag() == 0)
+
+	uint8_t *addr = access_address_from_bank(0x00, direct());
+	if (x_flag() == 0)
 		STN_16(addr, 0x0000);
 	else
 		STN_8(addr, 0x0000);
@@ -3427,7 +3611,7 @@ void f64_STZ(){
 //STZ dp, X	74	DP Indexed, X		2
 void f74_STZ(){
 	uint8_t *addr = access_address(direct_indexed_x());
-	if (m_flag() == 0)
+	if (x_flag() == 0)
 		STN_16(addr, 0x0000);
 	else
 		STN_8(addr, 0x0000);
@@ -3438,7 +3622,7 @@ void f74_STZ(){
 //STZ addr	9C	Absolute		3
 void f9C_STZ(){
 	uint8_t *addr = access_address(absolute());
-	if (m_flag() == 0)
+	if (x_flag() == 0)
 		STN_16(addr, 0x0000);
 	else
 		STN_8(addr, 0x0000);
@@ -3449,7 +3633,7 @@ void f9C_STZ(){
 //STZ addr, X	9E	Absolute Indexed, X		3
 void f9E_STZ(){
 	uint8_t *addr = access_address_from_bank(data_bank_register, absolute_indexed_x());
-	if (m_flag() == 0)
+	if (x_flag() == 0)
 		STN_16(addr, 0x0000);
 	else
 		STN_8(addr, 0x0000);
@@ -3554,7 +3738,10 @@ void f5B_TCD() {
 //TCS	1B	Implied		1
 void f1B_TCS() {
 	stack = accumulator;
-	set_p_register_16(stack, NEGATIVE_FLAG, ZERO_FLAG);
+	if (inEmulationMode) {
+		stack &= 0x00FF;
+		stack |= 0x0100;
+	}
 	program_counter++;
 }
 
@@ -3629,13 +3816,15 @@ void fEB_XBA(){
 	uint8_t B = accumulator & 0x00FF;
 	accumulator = accumulator >> 8;
 	accumulator = accumulator | (B << 8);
+	uint8_t A = accumulator & 0x00FF;
+	set_p_register_8(A, ZERO_FLAG | NEGATIVE_FLAG);
 	program_counter++;
 }
 
 //XCE	FB	Implied	–MX—CE	1
 void fFB_XCE(){
 	uint8_t carry_holder = p_register & CARRY_FLAG;
-	p_register &= !CARRY_FLAG;
+	p_register &= ~CARRY_FLAG;
 	p_register |= emulation_flag;
 	emulation_flag = carry_holder;
 	

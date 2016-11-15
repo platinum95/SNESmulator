@@ -1,8 +1,24 @@
 #include "system.h"
 #include "cartridge.h"
+#include "spc700.h"
 #include "ram.h"
 #include "cpu.h"
+#include "string.h"
 
+struct address_bus_a {
+	uint32_t bus;
+	uint8_t RD;
+	uint8_t WR;
+	uint8_t WRAM;
+	uint8_t CART;
+};
+struct address_bus_b {
+	uint8_t bus;
+	uint8_t PARD;
+	uint8_t PAWR;
+};
+uint8_t data_bus;
+uint8_t open_bus;
 #pragma region private_headers
 uint8_t *access_address_from_bank_loRom(uint8_t bank, uint16_t addr);
 uint8_t *access_address_from_bank_hiRom(uint8_t bank, uint16_t addr);
@@ -11,12 +27,18 @@ _Bool execute;
 unsigned int cycle_counter;
 uint8_t system_memory[131072];
 uint8_t hardware_registers[16383];
+
 #pragma endregion
 
 uint8_t *access_address(unsigned int addr) {
 	uint8_t bank = addr >> 16;
 	uint16_t offset = addr & 0xFFFF;
-	return access_address_from_bank(bank, offset);
+	uint8_t *dataloc = access_address_from_bank(bank, offset);
+	if (dataloc == NULL)
+		return &open_bus;
+	
+	open_bus = *dataloc;
+	return dataloc;
 }
 
 int load_rom(const char* rom_path) {
@@ -31,6 +53,14 @@ uint8_t *accessSystemRam() {
 	return system_memory;
 }
 
+uint32_t getMappedInstructionAddr(uint8_t bank, uint16_t addr) {
+	uint32_t instruction_addr = bank;
+	instruction_addr <<= 16;
+	instruction_addr |= addr;
+	instruction_addr &= ~0x800000;
+	return instruction_addr;
+}
+
 
 int startup() {
 	if(emulated_cartidge.romType == LoROM)
@@ -38,9 +68,13 @@ int startup() {
 	else if (emulated_cartidge.romType == HiROM)
 		access_address_from_bank = access_address_from_bank_hiRom;
 	initialise_cpu();
+	memset(system_memory, 0x55, 131072);
+	memset(hardware_registers, 0x55, 16383);
+	spc700_initialise();
 }
 
 void begin_execution() {
+	program_bank_register = 0x00;
 	if (emulated_cartidge.romType == LoROM)
 		program_counter = 0x01ff70;
 	else if (emulated_cartidge.romType == HiROM)
@@ -119,7 +153,10 @@ uint8_t *access_address_from_bank_hiRom(uint8_t bank, uint16_t offset) {
 		}
 		//Hardware addresses
 		if (offset >= 0x2000 && offset <= 0x5FFF) {
-			return &hardware_registers[offset];
+			if (offset >= 0x2140 && offset < 0x2144)
+				return access_spc_snes_mapped(offset);
+			else
+				return &hardware_registers[offset];
 		}
 		//sram
 		if (offset >= 0x6000 && offset <= 0x7FFF) {
@@ -128,14 +165,17 @@ uint8_t *access_address_from_bank_hiRom(uint8_t bank, uint16_t offset) {
 		}
 		//Rom mapping
 		if (offset >= 0x8000 && offset <= 0xFFFF) {
-			int romIndex = (bank * 0x7FFF) + offset - 0x7FFF;
+			//int romIndex = (bank * 0x8000) + (offset - 0x8000);
 			//0x01ff70;
-			return &emulated_cartidge.rom[romIndex];
+			//return &emulated_cartidge.rom[romIndex];
+			uint32_t instruction_addr = getMappedInstructionAddr(bank, offset);
+			instruction_addr &= ~0x800000;
+			return &getRomData()[instruction_addr];
 		}
 	}
 	//Further rom mapping
 	if (bank >= 0x40 && bank <= 0x7D) {
-		int romIndex =  (((bank- 0x40) * 0xFFFF) + offset);
+		int romIndex =  (((bank- 0x40) * 0x10000) + offset);
 		return &emulated_cartidge.rom[romIndex];
 	}
 	//System ram
@@ -147,12 +187,14 @@ uint8_t *access_address_from_bank_hiRom(uint8_t bank, uint16_t offset) {
 	//Fast rom
 	if (bank >= 0x80 && bank <= 0xFD) {
 		uint8_t newBank = bank - 0x80;
+		/*
 		if (newBank >= 0 && newBank <= 0x3F) {
 			int romIndex = (newBank * 0x10000) + offset;
 			return &emulated_cartidge.rom[romIndex];
 		}
 		else	
-			return access_address_from_bank(bank - 0x80, offset);
+		*/
+		return access_address_from_bank(newBank, offset);
 	}
 	//Last bt of rom
 	if (bank >= 0xFE && bank <= 0xFF) {
@@ -211,6 +253,6 @@ uint32_t gen3Byte(uint8_t bank, uint16_t addr) {
 }
 
 void store2Byte_local(uint8_t* loc, uint16_t val) {
-	*loc = (uint8_t)(val & 0xFF00);
-	*(loc + 1) = (uint8_t)(val & 0x00FF);
+	*loc = (uint8_t)(val & 0x00FF);
+	*(loc + 1) = (uint8_t)(val >> 8);
 }

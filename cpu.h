@@ -13,7 +13,7 @@ uint16_t p_register;
 
 #pragma region Internal_Registers
 uint16_t accumulator;
-uint32_t program_counter;
+uint16_t program_counter;
 uint8_t *stack_pointer;
 uint32_t stack;
 uint16_t data_bank_register;
@@ -180,6 +180,8 @@ void f10_BPL();
 
 //BRA nearlabel	80	Program Counter Relative		2
 void f80_BRA();
+void f80_BRA2();
+void work_you_fuck();
 
 //BRK	0	Stack / Interrupt	— - DI–	28
 void f00_BRK();

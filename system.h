@@ -52,5 +52,6 @@ void store2Byte_local(uint8_t* loc, uint16_t val);
 //Generate a 3 byte value
 uint32_t gen3Byte(uint8_t bank, uint16_t addr);
 
+uint32_t getMappedInstructionAddr(uint8_t bank, uint16_t addr);
 
 #endif

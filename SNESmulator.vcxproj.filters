@@ -33,6 +33,12 @@
     <ClCompile Include="system.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="exec_compare.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="spc700.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="main.h">
@@ -51,6 +57,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="system.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="exec_compare.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="spc700.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

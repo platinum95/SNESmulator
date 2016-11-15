@@ -145,17 +145,21 @@
   <ItemGroup>
     <ClCompile Include="cartridge.c" />
     <ClCompile Include="cpu.c" />
+    <ClCompile Include="exec_compare.c" />
     <ClCompile Include="hardware.c" />
     <ClCompile Include="main.c" />
     <ClCompile Include="ram.c" />
+    <ClCompile Include="spc700.c" />
     <ClCompile Include="system.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="cartridge.h" />
     <ClInclude Include="cpu.h" />
+    <ClInclude Include="exec_compare.h" />
     <ClInclude Include="hardware.h" />
     <ClInclude Include="main.h" />
     <ClInclude Include="ram.h" />
+    <ClInclude Include="spc700.h" />
     <ClInclude Include="system.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
