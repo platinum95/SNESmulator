@@ -138,7 +138,7 @@ void execute_next_instruction() {
 	instruction_addr &= ~0x800000;
 	uint8_t current_instruction = getRomData()[instruction_addr];
 	printf("%03i | %02x%04x | %02x | A:%04x | X:%04x | Y:%04x | P:%s\n", counter, program_bank_register, program_counter, current_instruction, accumulator, X, Y, byte_to_binary(p_register));
-	if (counter >= 8540) {
+	if (counter >= 197) {
 		int hello = 0;
 	}
 	if (counter == 1)
@@ -866,6 +866,7 @@ int BCD_ADD_NYBBLE(uint8_t *reg, uint8_t toAdd) {
 
 void ADC_8(uint8_t toAdd) {
 	uint8_t d_on = p_register & DECIMAL_FLAG;
+	uint8_t a = accumulator, b, r;
 	if (d_on > 0) {
 		uint8_t carry = p_register & CARRY_FLAG;
 		uint16_t sum = 0;
@@ -877,7 +878,8 @@ void ADC_8(uint8_t toAdd) {
 			val <<= i * 4;
 			sum |= val;
 		}
-		accumulator = sum;
+		a = b = accumulator;
+		r = accumulator = sum;
 		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 		if (carry)
 			p_register |= CARRY_FLAG;
@@ -885,12 +887,21 @@ void ADC_8(uint8_t toAdd) {
 			p_register &= ~CARRY_FLAG;
 	}
 	else {
+		b = toAdd;
 		accumulator = accumulator + toAdd + (1 & p_register);
+		r = accumulator;
+
 	}
+	if (((a & 0x80) == (b & 0x80)) && ((r & 0x80) != (a & 0x80)))
+		p_register |= OVERFLOW_FLAG;
+	else
+		p_register &= ~OVERFLOW_FLAG;
+
 	set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 }
 void ADC_16(uint16_t toAdd) {
 	uint8_t d_on = p_register & DECIMAL_FLAG;
+	uint16_t a = accumulator, b, r;
 	if (d_on > 0) {
 		uint8_t carry = p_register & CARRY_FLAG;
 		uint16_t sum = 0;
@@ -902,15 +913,25 @@ void ADC_16(uint16_t toAdd) {
 			val <<= i * 4;
 			sum |= val;
 		}
-		accumulator = sum;
+		a = b = accumulator;
+		r = accumulator = sum;
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 		if (carry)
 			p_register |= CARRY_FLAG;
 		else
 			p_register &= ~CARRY_FLAG;
 	}
-	else
+	else {
+		b = toAdd;
 		accumulator = accumulator + toAdd + (1 & p_register);
+		r = accumulator;
+	}
+	if(((a & 0x8000) == (b & 0x8000)) && ((r & 0x8000) != (a & 0x8000)))
+		p_register |= OVERFLOW_FLAG;
+	else
+		p_register &= ~OVERFLOW_FLAG;
+
+	set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 }
 //ADC(_dp_, X)	61	DP Indexed Indirect, X	NV— - ZC	2
 void f61_ADC(){
@@ -2889,7 +2910,8 @@ void f68_PLA(){
 		set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
 	else {
-		accumulator = pull_from_stack_8(&stack);
+		accumulator &= 0xFF00;
+		accumulator |= pull_from_stack_8(&stack);
 		set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	}
 

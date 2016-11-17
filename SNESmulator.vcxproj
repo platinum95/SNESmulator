@@ -160,6 +160,7 @@
     <ClInclude Include="main.h" />
     <ClInclude Include="ram.h" />
     <ClInclude Include="spc700.h" />
+    <ClInclude Include="spc700_instruction_declarations.h" />
     <ClInclude Include="system.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
