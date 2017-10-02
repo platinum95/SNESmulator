@@ -7,6 +7,7 @@
 
 _Bool inEmulationMode = 1, carryIsEmulationBit = 0;
 
+
 uint32_t call_stack[30];
 uint8_t cs_counter = 0;
 _Bool accumulator_is_8bit = 1;
@@ -95,13 +96,13 @@ uint16_t stack_relative_indirect_indexed_16();
 #pragma endregion
 
 
-void initialise_cpu() {
+void InitialiseCpu() {
 	stack_pointer = access_address(0x7E0000);
 	direct_page = (uint16_t)0000;
 	p_register = 0x34;
 	inEmulationMode = 1;
 	emulation_flag = 0x1;
-	populate_instructions();
+	PopulateInstructions();
 
 }
 const char *byte_to_binary(uint8_t x) {
@@ -129,32 +130,67 @@ struct execution createEx() {
 	return ex;
 }
 
-void execute_next_instruction() {
+uint8_t prev_instr = 0;
+void ExecuteNextInstruction() {
 	static int counter = 0;
 	counter++;
 	uint8_t *romLoc = getRomData();
 	uint32_t instruction_addr = getMappedInstructionAddr(program_bank_register, program_counter);
-//	uint8_t current_instruction = (uint8_t) *(access_address(instruction_addr));
+	//	uint8_t current_instruction = (uint8_t) *(access_address(instruction_addr));
 	instruction_addr &= ~0x800000;
 	uint8_t current_instruction = getRomData()[instruction_addr];
-	printf("%03i | %02x%04x | %02x | A:%04x | X:%04x | Y:%04x | P:%s\n", counter, program_bank_register, program_counter, current_instruction, accumulator, X, Y, byte_to_binary(p_register));
-	if (counter >= 197) {
-		int hello = 0;
-	}
+	printf("\n%03i | %02x%04x | %02x | A:%04x | X:%04x | Y:%04x | P:%s\n", counter, program_bank_register, program_counter, current_instruction, accumulator, X, Y, byte_to_binary(p_register));
+
 	if (counter == 1)
 		start_comp();
-	struct execution currentEx = createEx();
-	uint8_t comparison = compare(currentEx);
-	if (comparison != 0) {
-		int hello = 0;
+	/*
+	if (counter == 8544) {
+		for (int i = 0; i < 22; i++) {
+			struct execution currentEx = createEx();
+			uint8_t comparison = compare(currentEx);
+		}
 	}
+	if (counter == 23137) {
+		for (int i = 0; i < 10; i++) {
+			struct execution currentEx = createEx();
+			uint8_t comparison = compare(currentEx);
+		}
+	}
+	if (counter == 23178) {
+		for (int i = 0; i < 18; i++) {
+			struct execution currentEx = createEx();
+			uint8_t comparison = compare(currentEx);
+		}
+	}
+	*/
 
+	if (current_instruction == 0xd0 && prev_instr == 0xcd && counter < 45000) {
+		uint8_t comparison;
+		do{
+			struct execution currentEx = createEx();
+			comparison = compare(currentEx);
+		} while (comparison != 0);
+
+	}
+	else {
+		struct execution currentEx = createEx();
+		uint8_t comparison = compare(currentEx);
+		if (comparison != 0) {
+			int hello = 0;
+		}
+	}
+	 prev_instr = current_instruction;
+	//bsnes bvs - 8567. our bvs - 8545
+	//next is -> their Z-z at 23148, ours at 23138
+	// ours 23178, theirs 23196
 	if (current_instruction == 0x80)
 		work_you_fuck();
 	else {
 		void(*next_instruction)() = *instructions[current_instruction];
-		next_instruction();
+ 		next_instruction();
 	}
+
+	
 	
 
 }
@@ -341,7 +377,7 @@ uint32_t stack_relative_indirect_indexed() {
 
 #pragma region INSTRUCTIONS
 
-void populate_instructions() {
+void PopulateInstructions() {
 	instructions[0x00] = f00_BRK;
 	instructions[0x01] = f01_ORA;
 	instructions[0x02] = f02_COP;
@@ -887,10 +923,15 @@ void ADC_8(uint8_t toAdd) {
 			p_register &= ~CARRY_FLAG;
 	}
 	else {
+		const uint16_t rhs16 = (uint16_t)toAdd;
+		const uint16_t lhs16 = rhs16 + (CARRY_FLAG & p_register);
 		b = toAdd;
-		accumulator = accumulator + toAdd + (1 & p_register);
+		if (lhs16 & 0xFF00)	//Check for carry			
+			p_register |= CARRY_FLAG;
+		else
+			p_register &= ~CARRY_FLAG;
+		accumulator += lhs16; // accumulator + toAdd + (CARRY_FLAG & p_register);
 		r = accumulator;
-
 	}
 	if (((a & 0x80) == (b & 0x80)) && ((r & 0x80) != (a & 0x80)))
 		p_register |= OVERFLOW_FLAG;
@@ -1416,7 +1457,7 @@ void f00_BRK(){
 //BRL label	82	Program Counter Relative Long		3
 void f82_BRL(){
 	short adjust = (short)relative_long();
-	program_counter += adjust;
+	program_counter += adjust+2;
 }
 
 //BVC nearlabel	50	Program Counter Relative		2
@@ -1425,18 +1466,21 @@ void f50_BVC(){
 		program_counter += 2;
 	else {
 		char adjust = (char)immediate_8();
-		program_counter += adjust;
+		program_counter += adjust + 2;
 	}
 	return;
 }
 
 //BVS nearlabel	70	Program Counter Relative		2
 void f70_BVS(){
-	if (OVERFLOW_FLAG & p_register == 0)
+
+	if (OVERFLOW_FLAG & p_register == 0) {
 		program_counter += 2;
+		return;
+	}
 	else {
 		char adjust = (char)immediate_8();
-		program_counter += adjust;
+		program_counter += adjust + 2;
 	}
 	return;
 }

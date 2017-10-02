@@ -3,48 +3,39 @@
 
 //Load rom from file into dynamically allocated memory
 //Returns 0 if success, -1 if rom size incorrect
-int loadRom(const char* filepath) {
-	FILE *romFile = fopen(filepath, "rb");
+int LoadRom(const char* filepath) {
+	FILE *romFile;
+	fopen_s(&romFile, filepath, "rb");
 	//Get rom size
 	fseek(romFile, 0, SEEK_END);
-	long rom_size = ftell(romFile);
+	const long romSize = ftell(romFile);
 	fseek(romFile, 0, SEEK_SET);
-	if (rom_size <= 0 || rom_size > 12580000)
+	if (romSize <= 0 || romSize > 12580000)
 		return 1;
 
-	emulated_cartidge.rom = malloc(rom_size);
-	fread(emulated_cartidge.rom, rom_size, 1, romFile);	//Read rom into memoryk
-	emulated_cartidge.romLoaded = 1;
-	emulated_cartidge.size = rom_size;
+	emulated_cartidge.rom = malloc(romSize);
+	fread(emulated_cartidge.rom, romSize, 1, romFile);	//Read rom into memory
+	emulated_cartidge.rom_loaded = 1;
+	emulated_cartidge.size = romSize;
 
-	int	hi_score, lo_score;
-
-	hi_score = ScoreHiROM(1);
-	lo_score = ScoreLoROM(1);
+	const int hiScore = ScoreHiROM(1);
+	const int loScore = ScoreLoROM(1);
 
 
-	emulated_cartidge.romType = HiROM;
-	if(lo_score > hi_score)
-		emulated_cartidge.romType = LoROM;
+	emulated_cartidge.rom_type = HI_ROM;
+	if(loScore > hiScore)
+		emulated_cartidge.rom_type = LO_ROM;
 	return 0;
 }
 
-//Give an estimate on probability of a header existing at offset atPoint
-unsigned int checkRomType(long atPoint) {
-	//check if sizes are completely off
-	if (emulated_cartidge.size < atPoint + 64)
-		return -1;
 
-
-}
-
-void deleteRom() {
-	if (emulated_cartidge.romLoaded == 1)
+void DeleteRom() {
+	if (emulated_cartidge.rom_loaded == 1)
 		free(emulated_cartidge.rom);
 }
 
-int ScoreHiROM(_Bool skip_header) {
-	long	*buf = emulated_cartidge.rom + 0xff00 + 0 + (skip_header ? 0x200 : 0);
+int ScoreHiROM(const _Bool skip_header) {
+	uint8_t	*buf = emulated_cartidge.rom + 0xff00U + 0U + (skip_header ? 0x200U : 0U);
 	int		score = 0;
 
 	if (buf[0xd5] & 0x1)
@@ -84,8 +75,8 @@ int ScoreHiROM(_Bool skip_header) {
 	return (score);
 }
 
-int ScoreLoROM(_Bool skip_header) {
-	long	*buf = emulated_cartidge.rom + 0x7f00 + 0 + (skip_header ? 0x200 : 0);
+int ScoreLoROM(const _Bool skip_header) {
+	uint8_t	*buf = emulated_cartidge.rom + 0x7f00 + 0 + (skip_header ? 0x200 : 0);
 	int		score = 0;
 
 	if (!(buf[0xd5] & 0x1))

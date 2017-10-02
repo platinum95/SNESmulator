@@ -3,28 +3,27 @@
 #define CARTRIDGE_H
 
 #include <stdlib.h>
-#include <stdio.h>
 #include <stdint.h>
 
-#define LoROM			0x20
-#define HiROM			0x21
-#define LoROM_FastROM	0x30
-#define HiROM_FastROM	0x31
-#define ExLoROM			0x32
-#define ExHiROM			0x35
+#define LO_ROM			0x20
+#define HI_ROM			0x21
+#define LO_ROM_FASTROM	0x30
+#define HI_ROM_FASTROM	0x31
+#define EX_LOROM			0x32
+#define EX_HIROM			0x35
 
 struct Emulated_Cartridge {
 	uint8_t* rom;
 	uint8_t* sram;
-	_Bool romLoaded;
+	_Bool rom_loaded;
 	long size;
-	short romType;
+	short rom_type;
 } emulated_cartidge;
 
-int loadRom(const char* filepath);
-void deleteRom();
-int	ScoreHiROM(_Bool skipHeader);
-int	ScoreLoROM(_Bool skipHeader);
+int LoadRom(const char* filepath);
+void DeleteRom();
+int	ScoreHiROM(_Bool skip_header);
+int	ScoreLoROM(_Bool skip_header);
 
 
 #endif

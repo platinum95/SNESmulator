@@ -1,10 +1,10 @@
 #pragma once
 #include <stdint.h>
 
-void initialise_cpu();
-void execute_next_instruction();
+void InitialiseCpu();
+void ExecuteNextInstruction();
 
-void populate_instructions();
+void PopulateInstructions();
 
 char registers[30 * 2];
 

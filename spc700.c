@@ -87,74 +87,94 @@ void spc700_execute_next_instruction() {
 }
 
 #pragma region SPC_ADDRESSING_MODES
-uint8_t *immediate() {
-
+static uint8_t *immediate() {
+	return &spc_memory[program_counter];
 }
-uint8_t immediate_8() {
-	return *immediate;
+static uint8_t immediate_8() {
+	return *immediate();
 }
-uint8_t *indirect_X() {
+static uint8_t *indirect_X() {
 	return &spc_memory[X];
 }
-uint8_t indirect_X_8() {
+static uint8_t indirect_X_8() {
 	return *indirect_X();
 }
-uint8_t indirect_X_AI_8() {
+static uint8_t indirect_X_AI_8() {
 	uint8_t toRet = *indirect_X();
 	X++;
 	return toRet;
 }
 
-uint8_t *direct(uint8_t offset) {
+static uint8_t *direct(uint8_t offset) {
 	uint8_t dp = immediate_8() + offset;
 	uint16_t dp_addr = get_direct_page(offset);
 	return &spc_memory[dp_addr];
 }
-uint8_t direct_8() {
+static uint8_t direct_8() {
 	return *direct(0);
 }
-uint16_t direct_16() {
+static uint16_t direct_16() {
 	return get2Byte(direct(0));
 }
-uint8_t direct_indexed_X_8() {
+static uint8_t direct_indexed_X_8() {
 	return *direct(X);
 }
-uint16_t direct_indexed_X_16() {
+static uint16_t direct_indexed_X_16() {
 	return get2Byte(direct(X));
 }
-uint8_t direct_indexed_Y_8() {
+static uint8_t direct_indexed_Y_8() {
 	return *direct(Y);
 }
-uint16_t direct_indexed_Y_16() {
+static uint16_t direct_indexed_Y_16() {
 	return get2Byte(direct(Y));
 }
 
-uint8_t *direct_indexed_X_indirect() {
+static uint8_t *direct_indexed_X_indirect() {
 	uint16_t addr = direct_indexed_X_16();
 	return &spc_memory[addr];
 }
-uint8_t direct_indexed_X_indirect_8() {
+static uint8_t direct_indexed_X_indirect_8() {
 	return *direct_indexed_X_indirect();
 }
-uint8_t *direct_indirect_indexed_Y_indirect() {
+static uint8_t *direct_indirect_indexed_Y_indirect() {
 	uint16_t addr = direct_16() + Y;
 	return &spc_memory[addr];
 }
-uint8_t direct_indexed_Y_indirect_8() {
+static uint8_t direct_indirect_indexed_Y_indirect_8(){
 	return *direct_indirect_indexed_Y_indirect();
 }
 
-uint16_t absolute_addr() {
+static uint8_t direct_indexed_Y_indirect_8() {
+	return *direct_indirect_indexed_Y_indirect();
+}
+
+
+
+static uint16_t absolute_addr() {
 	return get2Byte(immediate());
 }
-uint8_t *absolute() {
+static uint8_t *absolute() {
 	return &spc_memory[absolute_addr()];
 }
-uint8_t absolute_8() {
+static uint8_t absolute_8() {
 	return *absolute();
 }
-uint8_t absolute_16() {
+static uint16_t absolute_16() {
 	return get2Byte(absolute());
+}
+
+static uint8_t absolute_indexed_X_8(){
+	uint16_t addr = absolute_addr() + X;
+	return spc_memory[addr];
+}
+static uint8_t absolute_indexed_Y_8() {
+	uint16_t addr = absolute_addr() + Y;
+	return spc_memory[addr];
+}
+
+static uint8_t stack_pop_8(){
+	SP -= 1;
+	return spc_memory[SP];
 }
 
 
@@ -474,7 +494,7 @@ _inline void ADC(uint8_t *R, uint8_t A, uint8_t B) {
 _inline void SBC(uint8_t *R, uint8_t A, uint8_t B) {
 	uint8_t C = PSW & CARRY_FLAG ? 0 : 1;
 	uint8_t Bneg = B + C;
-	uint8_t Bneg = ~Bneg;
+	Bneg = ~Bneg;
 	Bneg += 1;
 	ADC(R, A, Bneg);
 }
@@ -488,7 +508,7 @@ _inline void fs86_ADC() {
 	ADC(&A, A, X);
 }
 _inline void fs97_ADC() {
-	uint8_t val = direct_indirect_indexed_Y_indirect_8();
+	uint8_t val = *direct_indirect_indexed_Y_indirect();
 	ADC(&A, A, val);
 }
 _inline void fs87_ADC() {

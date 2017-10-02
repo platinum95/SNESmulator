@@ -42,7 +42,7 @@ uint8_t *access_address(unsigned int addr) {
 }
 
 int load_rom(const char* rom_path) {
-	return loadRom(rom_path);
+	return LoadRom(rom_path);
 }
 
 uint8_t *getRomData() {
@@ -63,11 +63,11 @@ uint32_t getMappedInstructionAddr(uint8_t bank, uint16_t addr) {
 
 
 int startup() {
-	if(emulated_cartidge.romType == LoROM)
+	if(emulated_cartidge.rom_type == LO_ROM)
 		access_address_from_bank = access_address_from_bank_hiRom;
-	else if (emulated_cartidge.romType == HiROM)
+	else if (emulated_cartidge.rom_type == HI_ROM)
 		access_address_from_bank = access_address_from_bank_hiRom;
-	initialise_cpu();
+	InitialiseCpu();
 	memset(system_memory, 0x55, 131072);
 	memset(hardware_registers, 0x55, 16383);
 	spc700_initialise();
@@ -75,9 +75,9 @@ int startup() {
 
 void begin_execution() {
 	program_bank_register = 0x00;
-	if (emulated_cartidge.romType == LoROM)
+	if (emulated_cartidge.rom_type == LO_ROM)
 		program_counter = 0x01ff70;
-	else if (emulated_cartidge.romType == HiROM)
+	else if (emulated_cartidge.rom_type == HI_ROM)
 		program_counter =  0x01ff70;
 	execute = 1;
 	cycle();
@@ -89,7 +89,7 @@ void cycle() {
 
 		}
 		else {
-			execute_next_instruction();
+			ExecuteNextInstruction();
 		}
 		cycle_counter++;
 	}

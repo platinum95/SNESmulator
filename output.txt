@@ -1,5 +1,4 @@
 spc700_instructions[0x00] =f00_NOP;
-
 spc700_instructions[0x01] =f01_TCALL;
 spc700_instructions[0x02] =f02_SET1;
 spc700_instructions[0x03] =f03_BBS;
