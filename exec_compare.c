@@ -140,7 +140,7 @@ struct execution parseNextLine(FILE *file) {
 
 FILE *comp_file;
 int start_comp() {
-	comp_file = fopen("export_exec.txt", "r");
+	comp_file = fopen("exec_comp.txt", "r");
 	return 0;
 }
 
