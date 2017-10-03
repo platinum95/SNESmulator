@@ -1,205 +1,167 @@
-﻿  system.c
-d:\projects\c++\vs2015\snesmulator\snesmulator\system.c(67): warning C4028: formal parameter 1 different from declaration
-d:\projects\c++\vs2015\snesmulator\snesmulator\system.c(67): warning C4028: formal parameter 2 different from declaration
-d:\projects\c++\vs2015\snesmulator\snesmulator\system.c(69): warning C4028: formal parameter 1 different from declaration
-d:\projects\c++\vs2015\snesmulator\snesmulator\system.c(69): warning C4028: formal parameter 2 different from declaration
-d:\projects\c++\vs2015\snesmulator\snesmulator\system.c(79): warning C4305: '=': truncation from 'int' to 'uint16_t'
-d:\projects\c++\vs2015\snesmulator\snesmulator\system.c(81): warning C4305: '=': truncation from 'int' to 'uint16_t'
-  spc700.c
-d:\projects\c++\vs2015\snesmulator\snesmulator\spc700.c(1226): warning C4244: '=': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\spc700.c(1235): warning C4244: '=': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-  ram.c
-  main.c
-  hardware.c
-  exec_compare.c
-d:\projects\c++\vs2015\snesmulator\snesmulator\exec_compare.c(21): warning C4090: 'function': different 'const' qualifiers
-d:\projects\c++\vs2015\snesmulator\snesmulator\exec_compare.c(22): warning C4090: 'function': different 'const' qualifiers
-d:\projects\c++\vs2015\snesmulator\snesmulator\exec_compare.c(143): warning C4996: 'fopen': This function or variable may be unsafe. Consider using fopen_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
-  c:\program files (x86)\windows kits\10\include\10.0.15063.0\ucrt\stdio.h(207): note: see declaration of 'fopen'
-  cpu.c
+﻿  cpu.c
 d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(114): warning C4996: 'strcat': This function or variable may be unsafe. Consider using strcat_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
   c:\program files (x86)\windows kits\10\include\10.0.15063.0\ucrt\string.h(93): note: see declaration of 'strcat'
 d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(123): warning C4244: '=': conversion from 'uint16_t' to 'uint8_t', possible loss of data
 d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(129): warning C4244: '=': conversion from 'uint16_t' to 'uint8_t', possible loss of data
 d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(138): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
 d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(142): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(240): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(246): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(309): warning C4047: 'return': 'uint32_t' differs in levels of indirection from 'uint8_t *'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(336): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(352): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint8_t'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(352): warning C4024: 'get2Byte': different types for formal and actual parameter 1
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(357): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint8_t'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(357): warning C4024: 'get3Byte': different types for formal and actual parameter 1
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(362): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint8_t'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(362): warning C4024: 'get2Byte': different types for formal and actual parameter 1
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(367): warning C4047: 'return': 'uint16_t' differs in levels of indirection from 'uint8_t *'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(371): warning C4047: 'initializing': 'uint32_t' differs in levels of indirection from 'uint8_t *'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(699): warning C4244: 'initializing': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(738): warning C4047: 'initializing': 'uint8_t *' differs in levels of indirection from 'uint32_t'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(743): warning C4047: 'initializing': 'uint8_t *' differs in levels of indirection from 'uint32_t'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(849): warning C4047: 'function': 'uint16_t' differs in levels of indirection from 'uint8_t *'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(849): warning C4024: 'store4Byte': different types for formal and actual parameter 1
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(917): warning C4244: '=': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(220): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(226): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(289): warning C4047: 'return': 'uint32_t' differs in levels of indirection from 'uint8_t *'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(316): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(332): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint8_t'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(332): warning C4024: 'get2Byte': different types for formal and actual parameter 1
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(337): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint8_t'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(337): warning C4024: 'get3Byte': different types for formal and actual parameter 1
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(342): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint8_t'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(342): warning C4024: 'get2Byte': different types for formal and actual parameter 1
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(347): warning C4047: 'return': 'uint16_t' differs in levels of indirection from 'uint8_t *'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(351): warning C4047: 'initializing': 'uint32_t' differs in levels of indirection from 'uint8_t *'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(679): warning C4244: 'initializing': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(718): warning C4047: 'initializing': 'uint8_t *' differs in levels of indirection from 'uint32_t'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(723): warning C4047: 'initializing': 'uint8_t *' differs in levels of indirection from 'uint32_t'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(832): warning C4047: 'function': 'uint16_t' differs in levels of indirection from 'uint8_t *'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(832): warning C4024: 'store4Byte': different types for formal and actual parameter 1
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(900): warning C4244: '=': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(901): warning C4244: '=': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(902): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
 d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(918): warning C4244: '=': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(919): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(934): warning C4244: '=': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(941): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(905): warning C4244: 'initializing': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1149): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1287): warning C4333: '>>': right shift by too large amount, data loss
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1314): warning C4333: '>>': right shift by too large amount, data loss
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1399): warning C4554: '&': check operator precedence for possible error; use parentheses to clarify precedence
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1465): warning C4554: '&': check operator precedence for possible error; use parentheses to clarify precedence
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1477): warning C4554: '&': check operator precedence for possible error; use parentheses to clarify precedence
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1558): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1571): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1584): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1597): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1611): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1625): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1638): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1651): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1664): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1677): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1690): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1703): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1716): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1729): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1742): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1756): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1770): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1783): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1797): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1811): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1824): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1865): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1872): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1896): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1903): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1909): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1940): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1947): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1971): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1978): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1984): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2231): warning C4244: 'initializing': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2445): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2459): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2473): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2487): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2501): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2516): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2530): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2544): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2558): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2572): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2583): warning C4552: '>>': operator has no effect; expected operator with side-effect
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2588): warning C4552: '>>': operator has no effect; expected operator with side-effect
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2594): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint16_t'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2594): warning C4024: 'LSR_16': different types for formal and actual parameter 1
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2597): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint16_t'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2597): warning C4024: 'LSR_8': different types for formal and actual parameter 1
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2613): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint32_t'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2613): warning C4024: 'LSR_16': different types for formal and actual parameter 1
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2616): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint32_t'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2616): warning C4024: 'LSR_8': different types for formal and actual parameter 1
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2625): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint32_t'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2625): warning C4024: 'LSR_16': different types for formal and actual parameter 1
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2628): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint32_t'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2628): warning C4024: 'LSR_8': different types for formal and actual parameter 1
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2637): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint32_t'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2637): warning C4024: 'LSR_16': different types for formal and actual parameter 1
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2640): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint32_t'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2640): warning C4024: 'LSR_8': different types for formal and actual parameter 1
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2699): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2699): warning C4020: 'set_p_register_8': too many actual parameters
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2703): warning C4020: 'set_p_register_16': too many actual parameters
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2709): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2720): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2731): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2742): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2753): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2766): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2777): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2788): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2799): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2810): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2821): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2832): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2843): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2854): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2865): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2901): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2908): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2935): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2945): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2959): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2977): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2995): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3009): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3065): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3068): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3076): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3079): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3109): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3112): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3120): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3123): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3131): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3134): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3164): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3167): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3212): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3430): warning C4244: '=': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3450): warning C4333: '>>': right shift by too large amount, data loss
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3461): warning C4333: '>>': right shift by too large amount, data loss
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3560): warning C4333: '>>': right shift by too large amount, data loss
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3571): warning C4333: '>>': right shift by too large amount, data loss
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3605): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3616): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3627): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3638): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3649): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3660): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3701): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3716): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3720): warning C4047: 'function': 'uint16_t' differs in levels of indirection from 'uint8_t *'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3720): warning C4024: 'store2Byte': different types for formal and actual parameter 1
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3736): warning C4047: 'function': 'uint16_t' differs in levels of indirection from 'uint8_t *'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3736): warning C4024: 'store2Byte': different types for formal and actual parameter 1
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3747): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3751): warning C4047: 'function': 'uint16_t' differs in levels of indirection from 'uint8_t *'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3751): warning C4024: 'store2Byte': different types for formal and actual parameter 1
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3766): warning C4047: 'function': 'uint16_t' differs in levels of indirection from 'uint8_t *'
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3766): warning C4024: 'store2Byte': different types for formal and actual parameter 1
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3781): warning C4020: 'set_p_register_16': too many actual parameters
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3783): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3783): warning C4020: 'set_p_register_8': too many actual parameters
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3791): warning C4020: 'set_p_register_16': too many actual parameters
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3793): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3793): warning C4020: 'set_p_register_8': too many actual parameters
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3800): warning C4020: 'set_p_register_16': too many actual parameters
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3817): warning C4020: 'set_p_register_16': too many actual parameters
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3824): warning C4020: 'set_p_register_16': too many actual parameters
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3831): warning C4020: 'set_p_register_16': too many actual parameters
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3838): warning C4020: 'set_p_register_16': too many actual parameters
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3845): warning C4020: 'set_p_register_16': too many actual parameters
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3852): warning C4020: 'set_p_register_16': too many actual parameters
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3859): warning C4020: 'set_p_register_16': too many actual parameters
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3866): warning C4020: 'set_p_register_16': too many actual parameters
-  cartridge.c
-d:\projects\c++\vs2015\snesmulator\snesmulator\cartridge.c(37): warning C4028: formal parameter 1 different from declaration
-d:\projects\c++\vs2015\snesmulator\snesmulator\cartridge.c(78): warning C4028: formal parameter 1 different from declaration
-  Generating Code...
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(668): warning C4716: 'direct_16': must return a value
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(808): warning C4716: 'absolute_indirect_8': must return a value
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(809): warning C4716: 'absolute_indirect_16': must return a value
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(811): warning C4716: 'absolute_indirect_long_8': must return a value
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(812): warning C4716: 'absolute_indirect_long_16': must return a value
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(813): warning C4716: 'absolute_indirect_long_32': must return a value
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(815): warning C4716: 'absolute_indexed_indirect_8': must return a value
-d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(816): warning C4716: 'absolute_indexed_indirect_16': must return a value
-d:\projects\c++\vs2015\snesmulator\snesmulator\system.c(74): warning C4716: 'startup': must return a value
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(925): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(888): warning C4244: 'initializing': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1133): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1271): warning C4333: '>>': right shift by too large amount, data loss
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1298): warning C4333: '>>': right shift by too large amount, data loss
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1383): warning C4554: '&': check operator precedence for possible error; use parentheses to clarify precedence
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1449): warning C4554: '&': check operator precedence for possible error; use parentheses to clarify precedence
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1542): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1555): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1568): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1581): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1595): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1609): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1622): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1635): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1648): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1661): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1674): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1687): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1700): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1713): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1726): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1740): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1754): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1767): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1781): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1795): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1808): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1849): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1856): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1880): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1887): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1893): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1924): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1931): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1955): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1962): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(1968): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2215): warning C4244: 'initializing': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2429): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2443): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2457): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2471): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2485): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2500): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2514): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2528): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2542): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2556): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2567): warning C4552: '>>': operator has no effect; expected operator with side-effect
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2572): warning C4552: '>>': operator has no effect; expected operator with side-effect
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2578): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint16_t'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2578): warning C4024: 'LSR_16': different types for formal and actual parameter 1
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2581): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint16_t'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2581): warning C4024: 'LSR_8': different types for formal and actual parameter 1
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2597): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint32_t'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2597): warning C4024: 'LSR_16': different types for formal and actual parameter 1
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2600): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint32_t'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2600): warning C4024: 'LSR_8': different types for formal and actual parameter 1
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2609): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint32_t'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2609): warning C4024: 'LSR_16': different types for formal and actual parameter 1
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2612): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint32_t'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2612): warning C4024: 'LSR_8': different types for formal and actual parameter 1
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2621): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint32_t'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2621): warning C4024: 'LSR_16': different types for formal and actual parameter 1
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2624): warning C4047: 'function': 'uint8_t *' differs in levels of indirection from 'uint32_t'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2624): warning C4024: 'LSR_8': different types for formal and actual parameter 1
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2683): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2683): warning C4020: 'set_p_register_8': too many actual parameters
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2687): warning C4020: 'set_p_register_16': too many actual parameters
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2693): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2704): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2715): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2726): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2737): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2750): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2761): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2772): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2783): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2794): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2805): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2816): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2827): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2838): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2849): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2885): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2892): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2919): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2929): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2943): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2961): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2979): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(2993): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3049): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3052): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3060): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3063): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3093): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3096): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3104): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3107): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3115): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3118): warning C4133: 'function': incompatible types - from 'uint16_t *' to 'uint8_t *'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3148): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3151): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3196): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3416): warning C4244: '=': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3438): warning C4333: '>>': right shift by too large amount, data loss
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3449): warning C4333: '>>': right shift by too large amount, data loss
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3548): warning C4333: '>>': right shift by too large amount, data loss
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3559): warning C4333: '>>': right shift by too large amount, data loss
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3593): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3604): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3615): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3626): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3637): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3648): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3689): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3704): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3708): warning C4047: 'function': 'uint16_t' differs in levels of indirection from 'uint8_t *'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3708): warning C4024: 'store2Byte': different types for formal and actual parameter 1
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3724): warning C4047: 'function': 'uint16_t' differs in levels of indirection from 'uint8_t *'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3724): warning C4024: 'store2Byte': different types for formal and actual parameter 1
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3735): warning C4244: 'function': conversion from 'uint16_t' to 'char', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3739): warning C4047: 'function': 'uint16_t' differs in levels of indirection from 'uint8_t *'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3739): warning C4024: 'store2Byte': different types for formal and actual parameter 1
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3754): warning C4047: 'function': 'uint16_t' differs in levels of indirection from 'uint8_t *'
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3754): warning C4024: 'store2Byte': different types for formal and actual parameter 1
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3771): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(3781): warning C4244: 'function': conversion from 'uint16_t' to 'uint8_t', possible loss of data
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(648): warning C4716: 'direct_16': must return a value
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(788): warning C4716: 'absolute_indirect_8': must return a value
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(789): warning C4716: 'absolute_indirect_16': must return a value
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(792): warning C4716: 'absolute_indirect_long_16': must return a value
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(793): warning C4716: 'absolute_indirect_long_32': must return a value
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(791): warning C4716: 'absolute_indirect_long_8': must return a value
+d:\projects\c++\vs2015\snesmulator\snesmulator\cpu.c(795): warning C4716: 'absolute_indexed_indirect_8': must return a value
   SNESmulator.vcxproj -> D:\Projects\c++\VS2015\SNESmulator\SNESmulator\Debug\SNESmulator.exe
   SNESmulator.vcxproj -> D:\Projects\c++\VS2015\SNESmulator\SNESmulator\Debug\SNESmulator.pdb (Partial PDB)

@@ -26,6 +26,7 @@ void cycle();
 _Bool execute;
 unsigned int cycle_counter;
 uint8_t system_memory[131072];
+uint8_t reserved_memory[0x2000];
 uint8_t hardware_registers[16383];
 
 #pragma endregion
@@ -39,6 +40,12 @@ uint8_t *access_address(unsigned int addr) {
 	
 	open_bus = *dataloc;
 	return dataloc;
+}
+
+_Bool is_reserved(const uint8_t *addr){
+	if (addr < reserved_memory || addr > reserved_memory)
+		return 0;
+	return 1;
 }
 
 int load_rom(const char* rom_path) {
@@ -71,6 +78,8 @@ int startup() {
 	memset(system_memory, 0x55, 131072);
 	memset(hardware_registers, 0x55, 16383);
 	spc700_initialise();
+	memset(reserved_memory, 0x00, 0x1000);
+	memset(&reserved_memory[0x1000], 0x80, 0x1000);
 }
 
 void begin_execution() {
@@ -160,8 +169,13 @@ uint8_t *access_address_from_bank_hiRom(uint8_t bank, uint16_t offset) {
 		}
 		//sram
 		if (offset >= 0x6000 && offset <= 0x7FFF) {
-			int sramIndex = (bank * 0x1FFF) + (offset-0x6000);
-			return &emulated_cartidge.rom[sramIndex];
+			const uint16_t relative_offset = offset - 0x6000;
+			if(bank <= 0x1F){
+				return &reserved_memory[relative_offset];
+			} else {
+				int sramIndex = (bank * 0x1FFF) + relative_offset;
+				return &emulated_cartidge.rom[sramIndex];
+			}
 		}
 		//Rom mapping
 		if (offset >= 0x8000 && offset <= 0xFFFF) {

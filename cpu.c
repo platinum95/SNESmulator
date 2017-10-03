@@ -143,28 +143,8 @@ void ExecuteNextInstruction() {
 
 	if (counter == 1)
 		start_comp();
-	/*
-	if (counter == 8544) {
-		for (int i = 0; i < 22; i++) {
-			struct execution currentEx = createEx();
-			uint8_t comparison = compare(currentEx);
-		}
-	}
-	if (counter == 23137) {
-		for (int i = 0; i < 10; i++) {
-			struct execution currentEx = createEx();
-			uint8_t comparison = compare(currentEx);
-		}
-	}
-	if (counter == 23178) {
-		for (int i = 0; i < 18; i++) {
-			struct execution currentEx = createEx();
-			uint8_t comparison = compare(currentEx);
-		}
-	}
-	*/
 
-	if (current_instruction == 0xd0 && prev_instr == 0xcd && counter < 45000) {
+	if (current_instruction == 0xd0 && prev_instr == 0xcd) {
 		uint8_t comparison;
 		do{
 			struct execution currentEx = createEx();
@@ -175,7 +155,7 @@ void ExecuteNextInstruction() {
 	else {
 		struct execution currentEx = createEx();
 		uint8_t comparison = compare(currentEx);
-		if (comparison != 0) {
+		if (comparison == 1 || comparison == 2) {
 			int hello = 0;
 		}
 	}
@@ -813,7 +793,10 @@ uint16_t absolute_indirect_long_16() {}
 uint32_t absolute_indirect_long_32() {}
 
 uint8_t absolute_indexed_indirect_8() {}
-uint16_t absolute_indexed_indirect_16() {}
+uint16_t absolute_indexed_indirect_16(){
+	const uint32_t pLoc = absolute_indexed_x();
+	return get2Byte(access_address(pLoc));
+}
 
 uint8_t stack_relative_8() {
 	uint16_t stack_addr = stack_relative();
@@ -924,13 +907,14 @@ void ADC_8(uint8_t toAdd) {
 	}
 	else {
 		const uint16_t rhs16 = (uint16_t)toAdd;
-		const uint16_t lhs16 = rhs16 + (CARRY_FLAG & p_register);
+		const uint16_t lhs16 = rhs16 + (CARRY_FLAG & p_register) + (accumulator & 0x00ff);
 		b = toAdd;
 		if (lhs16 & 0xFF00)	//Check for carry			
 			p_register |= CARRY_FLAG;
 		else
 			p_register &= ~CARRY_FLAG;
-		accumulator += lhs16; // accumulator + toAdd + (CARRY_FLAG & p_register);
+		accumulator &= 0xff00;// lhs16; // accumulator + toAdd + (CARRY_FLAG & p_register);
+		accumulator |= (lhs16 & 0x00ff);
 		r = accumulator;
 	}
 	if (((a & 0x80) == (b & 0x80)) && ((r & 0x80) != (a & 0x80)))
@@ -1474,7 +1458,7 @@ void f50_BVC(){
 //BVS nearlabel	70	Program Counter Relative		2
 void f70_BVS(){
 
-	if (OVERFLOW_FLAG & p_register == 0) {
+	if ((OVERFLOW_FLAG & p_register) == 0) {
 		program_counter += 2;
 		return;
 	}
@@ -3427,10 +3411,14 @@ void fE2_SEP(){
 #pragma region store
 
 void STA_8(uint8_t* local_addr) {
+	if (is_reserved(local_addr))
+		return;
 	*local_addr = accumulator;
 }
 
 void STA_16(uint8_t* local_addr) {
+	if (is_reserved(local_addr))
+		return;
 	store2Byte_local(local_addr, accumulator);
 }
 
@@ -3778,9 +3766,9 @@ void f0C_TSB(){
 void fAA_TAX() {
 	X = accumulator;
 	if (x_flag() == 0)
-		set_p_register_16(X, NEGATIVE_FLAG, ZERO_FLAG);
+		set_p_register_16(X, NEGATIVE_FLAG | ZERO_FLAG);
 	else
-		set_p_register_8(X, NEGATIVE_FLAG, ZERO_FLAG);
+		set_p_register_8(X, NEGATIVE_FLAG | ZERO_FLAG);
 	program_counter++;
 }
 
@@ -3788,16 +3776,16 @@ void fAA_TAX() {
 void fA8_TAY() {
 	Y = accumulator;
 	if (x_flag() == 0)
-		set_p_register_16(X, NEGATIVE_FLAG, ZERO_FLAG);
+		set_p_register_16(Y, NEGATIVE_FLAG | ZERO_FLAG);
 	else
-		set_p_register_8(X, NEGATIVE_FLAG, ZERO_FLAG);
+		set_p_register_8(Y, NEGATIVE_FLAG | ZERO_FLAG);
 	program_counter++;
 }
 
 //TCD	5B	Implied	N—–Z - 1
 void f5B_TCD() {
 	direct_page = accumulator;
-	set_p_register_16(direct_page, NEGATIVE_FLAG, ZERO_FLAG);
+	set_p_register_16(direct_page, NEGATIVE_FLAG | ZERO_FLAG);
 	program_counter++;
 }
 
@@ -3814,56 +3802,56 @@ void f1B_TCS() {
 //TDC	7B	Implied	N—–Z - 1
 void f7B_TDC() {
 	accumulator = direct_page;
-	set_p_register_16(accumulator, NEGATIVE_FLAG, ZERO_FLAG);
+	set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	program_counter++;
 }
 
 //TSC	3B	Implied	N—–Z - 1
 void f3B_TSC(){
 	accumulator = stack;
-	set_p_register_16(accumulator, NEGATIVE_FLAG, ZERO_FLAG);
+	set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	program_counter++;
 }
 
 //TSX	BA	Implied	N—–Z - 1
 void fBA_TSX(){
 	X = stack;
-	set_p_register_16(X, NEGATIVE_FLAG, ZERO_FLAG);
+	set_p_register_16(X, NEGATIVE_FLAG | ZERO_FLAG);
 	program_counter++;
 }
 
 //TXA	8A	Implied	N—–Z - 1
 void f8A_TXA(){
 	accumulator = X;
-	set_p_register_16(accumulator, NEGATIVE_FLAG, ZERO_FLAG);
+	set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	program_counter++;
 }
 
 //TXS	9A	Implied		1
 void f9A_TXS(){
 	stack = X;
-	set_p_register_16(stack, NEGATIVE_FLAG, ZERO_FLAG);
+	set_p_register_16(stack, NEGATIVE_FLAG | ZERO_FLAG);
 	program_counter++;
 }
 
 //TXY	9B	Implied	N—–Z - 1
 void f9B_TXY(){
 	Y = X;
-	set_p_register_16(Y, NEGATIVE_FLAG, ZERO_FLAG);
+	set_p_register_16(Y, NEGATIVE_FLAG | ZERO_FLAG);
 	program_counter++;
 }
 
 //TYA	98	Implied	N—–Z - 1
 void f98_TYA(){
 	accumulator = Y;
-	set_p_register_16(accumulator, NEGATIVE_FLAG, ZERO_FLAG);
+	set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
 	program_counter++;
 }
 
 //TYX	BB	Implied	N—–Z - 1
 void fBB_TYX(){
 	X = Y;
-	set_p_register_16(X, NEGATIVE_FLAG, ZERO_FLAG);
+	set_p_register_16(X, NEGATIVE_FLAG | ZERO_FLAG);
 	program_counter++;
 }
 #pragma endregion
