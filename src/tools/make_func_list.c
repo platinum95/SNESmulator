@@ -10,7 +10,7 @@
 
 
 
-char* getLine(FILE * file) {
+static char* getLine(FILE * file) {
 	int n = 50;
 	char* buf = malloc(n);
 	fgets(buf, n, file);

@@ -4,8 +4,11 @@
 //Load rom from file into dynamically allocated memory
 //Returns 0 if success, -1 if rom size incorrect
 int LoadRom(const char* filepath) {
-	FILE *romFile;
-	fopen_s(&romFile, filepath, "rb");
+	FILE *romFile = fopen(filepath, "rb");
+	if( !romFile ){
+		printf( "Failed to open rom file\n" );
+		return -1;
+	}
 	//Get rom size
 	fseek(romFile, 0, SEEK_END);
 	const long romSize = ftell(romFile);
@@ -15,6 +18,7 @@ int LoadRom(const char* filepath) {
 
 	emulated_cartidge.rom = malloc(romSize);
 	fread(emulated_cartidge.rom, romSize, 1, romFile);	//Read rom into memory
+	fclose(romFile);
 	emulated_cartidge.rom_loaded = 1;
 	emulated_cartidge.size = romSize;
 

@@ -54,6 +54,6 @@ uint32_t gen3Byte(uint8_t bank, uint16_t addr);
 
 uint32_t getMappedInstructionAddr(uint8_t bank, uint16_t addr);
 
-_Bool is_reserved(uint8_t *addr);
+_Bool is_reserved(const uint8_t *addr);
 
 #endif

@@ -1,6 +1,0 @@
-Reading config file C:\Projects\C++\VS2015\SNESmulator\Snes9x-debugger/snes9x.debugger.cfg
-Saving	config file	C:\Projects\C++\VS2015\SNESmulator\Snes9x-debugger/snes9x.debugger.cfg
-No ROM file header found.
-Map_HiROMMap
-"SUPER MARIO KART" [checksum ok] HiROM, 4Mbits, Type: ROM+RAM+BAT+DSP1, Mode: 21, TV: NTSC, S-RAM: 2KB, ROMId:  Company: 01 CRC32: CD80DB86
-Saving	config file	C:\Projects\C++\VS2015\SNESmulator\Snes9x-debugger/snes9x.debugger.cfg

@@ -1,6 +1,8 @@
 #include "spc700.h"
 #include "spc700_instruction_declarations.h"
 #include "system.h"
+#include <stdint.h>
+#include <stddef.h>
 
 /*
 
@@ -36,7 +38,7 @@ uint8_t A, X, Y, SP, PSW;
 #define NEGATIVE_FLAG 0x80
 
 /* 16 bit "register" from A and Y registers */
-_inline uint16_t YA() {
+static uint16_t YA() {
 	uint16_t toRet = Y;
 	toRet <<= 8;
 	toRet |= A;
@@ -44,7 +46,7 @@ _inline uint16_t YA() {
 }
 
 /* 16 bit direct page = 0x0(P_FLAG)00 | DP_register */
-_inline uint16_t get_direct_page(uint8_t dp) {
+static uint16_t get_direct_page(uint8_t dp) {
 	uint16_t base = dp;
 	if (PSW | P_FLAG)
 		return base | 0x0100;
@@ -52,7 +54,7 @@ _inline uint16_t get_direct_page(uint8_t dp) {
 }
 
 /* 16 bit stack pointer = 0x0100 | SP_register */
-_inline uint16_t get_stack_pointer() {
+static uint16_t get_stack_pointer() {
 	uint16_t toRet = SP;
 	return toRet | 0x01;
 
@@ -464,7 +466,7 @@ void spc700_populate_instructions() {
 }
 
 #pragma region SPC_ADD_SBC
-_inline void ADC(uint8_t *R, uint8_t A, uint8_t B) {
+static void ADC(uint8_t *R, uint8_t A, uint8_t B) {
 	uint8_t AnL = A & 0x0F, BnL = B & 0x0F;
 	uint8_t Hc = AnL + BnL + (PSW & CARRY_FLAG);
 	//Half carry if lower nybbles carry
@@ -491,124 +493,124 @@ _inline void ADC(uint8_t *R, uint8_t A, uint8_t B) {
 	*R = (uint8_t)Rb;
 	spc_set_PSW_register(*R, NEGATIVE_FLAG | ZERO_FLAG);
 }
-_inline void SBC(uint8_t *R, uint8_t A, uint8_t B) {
+static void SBC(uint8_t *R, uint8_t A, uint8_t B) {
 	uint8_t C = PSW & CARRY_FLAG ? 0 : 1;
 	uint8_t Bneg = B + C;
 	Bneg = ~Bneg;
 	Bneg += 1;
 	ADC(R, A, Bneg);
 }
-_inline void fs99_ADC() {
+static void fs99_ADC() {
 	ADC(&X, X, Y);
 }
-_inline void fs88_ADC() {
+static void fs88_ADC() {
 	ADC(&A, A, immediate_8());
 }
-_inline void fs86_ADC() {
+static void fs86_ADC() {
 	ADC(&A, A, X);
 }
-_inline void fs97_ADC() {
+static void fs97_ADC() {
 	uint8_t val = *direct_indirect_indexed_Y_indirect();
 	ADC(&A, A, val);
 }
-_inline void fs87_ADC() {
+static void fs87_ADC() {
 	uint8_t dp = direct_indexed_X_indirect_8();
 	ADC(&A, A, dp);
 }
-_inline void fs84_ADC() {
+static void fs84_ADC() {
 	uint8_t dp = direct_8();
 	ADC(&A, A, dp);
 }
-_inline void fs94_ADC() {
+static void fs94_ADC() {
 	uint8_t dp = direct_indexed_X_8();
 	ADC(&A, A, dp);
 }
-_inline void fs85_ADC() {
+static void fs85_ADC() {
 	uint8_t dp = absolute_8();
 	ADC(&A, A, dp);
 }
-_inline void fs95_ADC() {
+static void fs95_ADC() {
 	uint8_t dp = absolute_indexed_X_8();
 	ADC(&A, A, dp);
 }
-_inline void fs96_ADC() {
+static void fs96_ADC() {
 	uint8_t dp = absolute_indexed_Y_8();
 	ADC(&A, A, dp);
 }
-_inline void fs89_ADC() {
+static void fs89_ADC() {
 	uint8_t dp = direct_8();
 	program_counter += 1;
 	uint8_t dp2 = direct_8();
 	ADC(&dp, dp, dp2);
 	program_counter += 2;
 }
-_inline void fs98_ADC() {
+static void fs98_ADC() {
 	uint8_t dp = direct_8();
 	program_counter += 1;
 	uint8_t dp2 = immediate_8();
 	ADC(&dp, dp, dp2);
 	program_counter += 2;
 }
-_inline void fs7A_ADDW() {
+static void fs7A_ADDW() {
 	uint16_t ya = YA();
 
 }
 
-_inline void fsB9_SBC() {
+static void fsB9_SBC() {
 	SBC(&X, X, Y);
 	program_counter += 1;
 }
-_inline void fsA8_SBC() {
+static void fsA8_SBC() {
 	SBC(&A, A, immediate_8());
 	program_counter += 2;
 }
-_inline void fsA6_SBC() {
+static void fsA6_SBC() {
 	SBC(&A, A, X);
 	program_counter += 1;
 }
-_inline void fsB7_SBC() {
+static void fsB7_SBC() {
 	SBC(&A, A, direct_indirect_indexed_Y_indirect_8());
 	program_counter += 2;
 }
-_inline void fsA7_SBC() {
+static void fsA7_SBC() {
 	SBC(&A, A, direct_indexed_X_indirect_8());
 	program_counter += 2;
 }
-_inline void fsA4_SBC() {
+static void fsA4_SBC() {
 	SBC(&X, X, direct_8());
 	program_counter += 2;
 }
-_inline void fsB4_SBC() {
+static void fsB4_SBC() {
 	SBC(&A, A, direct_indexed_X_8());
 	program_counter += 2;
 }
-_inline void fsA5_SBC() {
+static void fsA5_SBC() {
 	SBC(&A, A, absolute_8());
 	program_counter += 3;
 }
-_inline void fsB5_SBC() {
+static void fsB5_SBC() {
 	SBC(&A, A, absolute_indexed_X_8());
 	program_counter += 3;
 }
-_inline void fsB6_SBC() {
+static void fsB6_SBC() {
 	SBC(&A, A, absolute_indexed_Y_8());
 	program_counter += 3;
 }
-_inline void fsA9_SBC() {
+static void fsA9_SBC() {
 	uint8_t dp = direct_8();
 	program_counter += 1;
 	uint8_t dp2 = direct_8();
 	SBC(&dp, dp, dp2);
 	program_counter += 3;
 }
-_inline void fsB8_SBC() {
+static void fsB8_SBC() {
 	uint8_t dp = direct_8();
 	program_counter += 1;
 	uint8_t dp2 = immediate_8();
 	SBC(&dp, dp, dp2);
 	program_counter += 3;
 }
-_inline void fs9A_SUBW() {
+static void fs9A_SUBW() {
 	uint16_t ya = YA();
 
 }
@@ -616,610 +618,610 @@ _inline void fs9A_SUBW() {
 #pragma endregion 
 
 #pragma region SPC_AND
-_inline void AND(uint8_t B) {
+static void AND(uint8_t B) {
 
 }
 
-_inline void fs39_AND() {
+static void fs39_AND() {
 }
-_inline void fs28_AND() {
+static void fs28_AND() {
 }
-_inline void fs26_AND() {
+static void fs26_AND() {
 }
-_inline void fs37_AND() {
+static void fs37_AND() {
 }
-_inline void fs27_AND() {
+static void fs27_AND() {
 }
-_inline void fs24_AND() {
+static void fs24_AND() {
 }
-_inline void fs34_AND() {
+static void fs34_AND() {
 }
-_inline void fs25_AND() {
+static void fs25_AND() {
 }
-_inline void fs35_AND() {
+static void fs35_AND() {
 }
-_inline void fs36_AND() {
+static void fs36_AND() {
 }
-_inline void fs29_AND() {
+static void fs29_AND() {
 }
-_inline void fs38_AND() {
+static void fs38_AND() {
 }
-_inline void fs6A_AND1() {
+static void fs6A_AND1() {
 }
-_inline void fs4A_AND1() {
+static void fs4A_AND1() {
 }
 
 #pragma endregion 
 
 #pragma region SPC_BIT_SHIFT
-_inline void LSR(uint8_t *B) {
+static void LSR(uint8_t *B) {
 
 }
-_inline void ASL(uint8_t B) {
+static void ASL(uint8_t B) {
 }
-_inline void fs1C_ASL() {
+static void fs1C_ASL() {
 }
-_inline void fs0B_ASL() {
+static void fs0B_ASL() {
 }
-_inline void fs1B_ASL() {
+static void fs1B_ASL() {
 }
-_inline void fs0C_ASL() {
-}
-
-_inline void fs5C_LSR() {
-}
-_inline void fs4B_LSR() {
-}
-_inline void fs4C_LSR() {
-}
-_inline void fsAF_LSR() {
+static void fs0C_ASL() {
 }
 
-_inline void fs3C_ROL() {
+static void fs5C_LSR() {
 }
-_inline void fs2B_ROL() {
+static void fs4B_LSR() {
 }
-_inline void fs3B_ROL() {
+static void fs4C_LSR() {
 }
-_inline void fs2C_ROL() {
+static void fsAF_LSR() {
 }
-_inline void fs7C_ROR() {
+
+static void fs3C_ROL() {
 }
-_inline void fs6B_ROR() {
+static void fs2B_ROL() {
 }
-_inline void fs7B_ROR() {
+static void fs3B_ROL() {
 }
-_inline void fs6C_ROR() {
+static void fs2C_ROL() {
+}
+static void fs7C_ROR() {
+}
+static void fs6B_ROR() {
+}
+static void fs7B_ROR() {
+}
+static void fs6C_ROR() {
 }
 
 #pragma endregion
 
 #pragma region SPC_BRANCH
-_inline void BBC(uint8_t B) {
+static void BBC(uint8_t B) {
 
 }
 
-_inline void BBS(uint8_t B) {
+static void BBS(uint8_t B) {
 }
-_inline void fs13_BBC() {
+static void fs13_BBC() {
 }
-_inline void fs33_BBC() {
+static void fs33_BBC() {
 }
-_inline void fs53_BBC() {
+static void fs53_BBC() {
 }
-_inline void fs73_BBC() {
+static void fs73_BBC() {
 }
-_inline void fs93_BBC() {
+static void fs93_BBC() {
 }
-_inline void fsB3_BBC() {
+static void fsB3_BBC() {
 }
-_inline void fsD3_BBC() {
+static void fsD3_BBC() {
 }
-_inline void fsF3_BBC() {
+static void fsF3_BBC() {
 }
-_inline void fs03_BBS() {
+static void fs03_BBS() {
 }
-_inline void fs23_BBS() {
+static void fs23_BBS() {
 }
-_inline void fs43_BBS() {
+static void fs43_BBS() {
 }
-_inline void fs63_BBS() {
+static void fs63_BBS() {
 }
-_inline void fs83_BBS() {
+static void fs83_BBS() {
 }
-_inline void fsA3_BBS() {
+static void fsA3_BBS() {
 }
-_inline void fsC3_BBS() {
+static void fsC3_BBS() {
 }
-_inline void fsE3_BBS() {
+static void fsE3_BBS() {
 }
 
-_inline void fs90_BCC() {
+static void fs90_BCC() {
 }
-_inline void fsB0_BCS() {
+static void fsB0_BCS() {
 }
-_inline void fsF0_BEQ() {
+static void fsF0_BEQ() {
 }
-_inline void fs30_BMI() {
+static void fs30_BMI() {
 }
-_inline void fsD0_BNE() {
+static void fsD0_BNE() {
 }
-_inline void fs10_BPL() {
+static void fs10_BPL() {
 }
-_inline void fs50_BVC() {
+static void fs50_BVC() {
 }
-_inline void fs70_BVS() {
+static void fs70_BVS() {
 }
-_inline void fs2F_BRA() {
+static void fs2F_BRA() {
 }
-_inline void fs0F_BRK() {
+static void fs0F_BRK() {
 }
-_inline void fs1F_JMP() {
+static void fs1F_JMP() {
 }
-_inline void fs5F_JMP() {
+static void fs5F_JMP() {
 }
 
 #pragma endregion 
 
 #pragma region SPC_CLR
-_inline void CLR1(uint8_t B) {
+static void CLR1(uint8_t B) {
 
 }
-_inline void fs12_CLR1() {
+static void fs12_CLR1() {
 }
-_inline void fs32_CLR1() {
+static void fs32_CLR1() {
 }
-_inline void fs52_CLR1() {
+static void fs52_CLR1() {
 }
-_inline void fs72_CLR1() {
+static void fs72_CLR1() {
 }
-_inline void fs92_CLR1() {
+static void fs92_CLR1() {
 }
-_inline void fsB2_CLR1() {
+static void fsB2_CLR1() {
 }
-_inline void fsD2_CLR1() {
+static void fsD2_CLR1() {
 }
-_inline void fsF2_CLR1() {
+static void fsF2_CLR1() {
 }
 
-_inline void fs12_CLRC() {
+static void fs12_CLRC() {
 }
-_inline void fs12_CLRP() {
+static void fs12_CLRP() {
 }
-_inline void fs12_CLRB() {
+static void fs12_CLRB() {
 }
 #pragma endregion 
 
 #pragma region SPC_CMP
-_inline void CMP(uint8_t B) {
+static void CMP(uint8_t B) {
 
 }
-_inline void fs79_CMP() {
+static void fs79_CMP() {
 }
-_inline void fs68_CMP() {
+static void fs68_CMP() {
 }
-_inline void fs66_CMP() {
+static void fs66_CMP() {
 }
-_inline void fs77_CMP() {
+static void fs77_CMP() {
 }
-_inline void fs67_CMP() {
+static void fs67_CMP() {
 }
-_inline void fs64_CMP() {
+static void fs64_CMP() {
 }
-_inline void fs74_CMP() {
+static void fs74_CMP() {
 }
-_inline void fs65_CMP() {
+static void fs65_CMP() {
 }
-_inline void fs75_CMP() {
+static void fs75_CMP() {
 }
-_inline void fs76_CMP() {
+static void fs76_CMP() {
 }
-_inline void fsC8_CMP() {
+static void fsC8_CMP() {
 }
-_inline void fs3E_CMP() {
+static void fs3E_CMP() {
 }
-_inline void fs1E_CMP() {
+static void fs1E_CMP() {
 }
-_inline void fsAD_CMP() {
+static void fsAD_CMP() {
 }
-_inline void fs7E_CMP() {
+static void fs7E_CMP() {
 }
-_inline void fs5E_CMP() {
+static void fs5E_CMP() {
 }
-_inline void fs69_CMP() {
+static void fs69_CMP() {
 }
-_inline void fs78_CMP() {
+static void fs78_CMP() {
 }
-_inline void fs5A_CMPW() {
+static void fs5A_CMPW() {
 }
 #pragma endregion
 
 #pragma region SPC_DEC_INC
-_inline void DEC(uint8_t B) {
+static void DEC(uint8_t B) {
 
 }
-_inline void INC(uint8_t B) {
+static void INC(uint8_t B) {
 
 }
-_inline void fs9C_DEC() {
+static void fs9C_DEC() {
 }
-_inline void fs1D_DEC() {
+static void fs1D_DEC() {
 }
-_inline void fsDC_DEC() {
+static void fsDC_DEC() {
 }
-_inline void fs8B_DEC() {
+static void fs8B_DEC() {
 }
-_inline void fs9B_DEC() {
+static void fs9B_DEC() {
 }
-_inline void fs8C_DEC() {
+static void fs8C_DEC() {
 }
-_inline void fs1A_DEC() {
+static void fs1A_DEC() {
 }
-_inline void fsBC_INC() {
+static void fsBC_INC() {
 }
-_inline void fs3D_INC() {
+static void fs3D_INC() {
 }
-_inline void fsFC_INC() {
+static void fsFC_INC() {
 }
-_inline void fsAB_INC() {
+static void fsAB_INC() {
 }
-_inline void fsBB_INC() {
+static void fsBB_INC() {
 }
-_inline void fsAC_INC() {
+static void fsAC_INC() {
 }
-_inline void fs3A_INCW() {
+static void fs3A_INCW() {
 }
 #pragma endregion 
 
 #pragma region SPC_EOR_OR
-_inline void EOR(uint8_t B) {
+static void EOR(uint8_t B) {
 
 }
-_inline void OR(uint8_t B) {
+static void OR(uint8_t B) {
 
 }
-_inline void fs59_EOR() {
+static void fs59_EOR() {
 }
-_inline void fs48_EOR() {
+static void fs48_EOR() {
 }
-_inline void fs46_EOR() {
+static void fs46_EOR() {
 }
-_inline void fs57_EOR() {
+static void fs57_EOR() {
 }
-_inline void fs47_EOR() {
+static void fs47_EOR() {
 }
-_inline void fs44_EOR() {
+static void fs44_EOR() {
 }
-_inline void fs54_EOR() {
+static void fs54_EOR() {
 }
-_inline void fs45_EOR() {
+static void fs45_EOR() {
 }
-_inline void fs55_EOR() {
+static void fs55_EOR() {
 }
-_inline void fs56_EOR() {
+static void fs56_EOR() {
 }
-_inline void fs49_EOR() {
+static void fs49_EOR() {
 }
-_inline void fs58_EOR() {
+static void fs58_EOR() {
 }
-_inline void fs8A_EOR1() {
+static void fs8A_EOR1() {
 }
 
-_inline void fs19_OR() {
+static void fs19_OR() {
 }
-_inline void fs08_OR() {
+static void fs08_OR() {
 }
-_inline void fs06_OR() {
+static void fs06_OR() {
 }
-_inline void fs17_OR() {
+static void fs17_OR() {
 }
-_inline void fs07_OR() {
+static void fs07_OR() {
 }
-_inline void fs04_OR() {
+static void fs04_OR() {
 }
-_inline void fs14_OR() {
+static void fs14_OR() {
 }
-_inline void fs05_OR() {
+static void fs05_OR() {
 }
-_inline void fs15_OR() {
+static void fs15_OR() {
 }
-_inline void fs16_OR() {
+static void fs16_OR() {
 }
-_inline void fs09_OR() {
+static void fs09_OR() {
 }
-_inline void fs18_OR() {
+static void fs18_OR() {
 }
-_inline void fs2A_OR1() {
+static void fs2A_OR1() {
 }
-_inline void fs0A_OR1() {
+static void fs0A_OR1() {
 }
 
 
 #pragma endregion 
 
 #pragma region SPC_MOV
-_inline void MOV(uint8_t B) {
+static void MOV(uint8_t B) {
 
 }
-_inline void fsAF_MOV() {
+static void fsAF_MOV() {
 }
-_inline void fsC6_MOV() {
+static void fsC6_MOV() {
 }
-_inline void fsD7_MOV() {
+static void fsD7_MOV() {
 }
-_inline void fsC7_MOV() {
+static void fsC7_MOV() {
 }
-_inline void fsE8_MOV() {
+static void fsE8_MOV() {
 }
-_inline void fsE6_MOV() {
+static void fsE6_MOV() {
 }
-_inline void fsBF_MOV() {
+static void fsBF_MOV() {
 }
-_inline void fsF7_MOV() {
+static void fsF7_MOV() {
 }
-_inline void fsE7_MOV() {
+static void fsE7_MOV() {
 }
-_inline void fs7D_MOV() {
+static void fs7D_MOV() {
 }
-_inline void fsDD_MOV() {
+static void fsDD_MOV() {
 }
-_inline void fsE4_MOV() {
+static void fsE4_MOV() {
 }
-_inline void fsF4_MOV() {
+static void fsF4_MOV() {
 }
-_inline void fsE5_MOV() {
+static void fsE5_MOV() {
 }
-_inline void fsF5_MOV() {
+static void fsF5_MOV() {
 }
-_inline void fsF6_MOV() {
+static void fsF6_MOV() {
 }
-_inline void fsBD_MOV() {
+static void fsBD_MOV() {
 }
-_inline void fsCD_MOV() {
+static void fsCD_MOV() {
 }
-_inline void fs5D_MOV() {
+static void fs5D_MOV() {
 }
-_inline void fs9D_MOV() {
+static void fs9D_MOV() {
 }
-_inline void fsF8_MOV() {
+static void fsF8_MOV() {
 }
-_inline void fsF9_MOV() {
+static void fsF9_MOV() {
 }
-_inline void fsE9_MOV() {
+static void fsE9_MOV() {
 }
-_inline void fs8D_MOV() {
+static void fs8D_MOV() {
 }
-_inline void fsFD_MOV() {
+static void fsFD_MOV() {
 }
-_inline void fsEB_MOV() {
+static void fsEB_MOV() {
 }
-_inline void fsFB_MOV() {
+static void fsFB_MOV() {
 }
-_inline void fsEC_MOV() {
+static void fsEC_MOV() {
 }
-_inline void fsFA_MOV() {
+static void fsFA_MOV() {
 }
-_inline void fsD4_MOV() {
+static void fsD4_MOV() {
 }
-_inline void fsDB_MOV() {
+static void fsDB_MOV() {
 }
-_inline void fsD9_MOV() {
+static void fsD9_MOV() {
 }
-_inline void fs8F_MOV() {
+static void fs8F_MOV() {
 }
-_inline void fsC4_MOV() {
+static void fsC4_MOV() {
 }
-_inline void fsD8_MOV() {
+static void fsD8_MOV() {
 }
-_inline void fsCB_MOV() {
+static void fsCB_MOV() {
 }
-_inline void fsD5_MOV() {
+static void fsD5_MOV() {
 }
-_inline void fsD6_MOV() {
+static void fsD6_MOV() {
 }
-_inline void fsC5_MOV() {
+static void fsC5_MOV() {
 }
-_inline void fsC9_MOV() {
+static void fsC9_MOV() {
 }
-_inline void fsCC_MOV() {
+static void fsCC_MOV() {
 }
-_inline void fsAA_MOV1() {
+static void fsAA_MOV1() {
 }
-_inline void fsCA_MOV1() {
+static void fsCA_MOV1() {
 }
-_inline void fsBA_MOV1() {
+static void fsBA_MOV1() {
 }
-_inline void fsDA_MOVW() {
+static void fsDA_MOVW() {
 }
 
 #pragma endregion
 
 #pragma region SPC_STACK
-_inline void POP(uint8_t B) {
+static void POP(uint8_t B) {
 
 }
-_inline void fsAE_POP() {
+static void fsAE_POP() {
 }
-_inline void fs8E_POP() {
+static void fs8E_POP() {
 }
-_inline void fsCE_POP() {
+static void fsCE_POP() {
 }
-_inline void fsEE_POP() {
+static void fsEE_POP() {
 }
-_inline void fs2D_PUSH() {
+static void fs2D_PUSH() {
 }
-_inline void fs0D_PUSH() {
+static void fs0D_PUSH() {
 }
-_inline void fs4D_PUSH() {
+static void fs4D_PUSH() {
 }
-_inline void fs6D_PUSH() {
+static void fs6D_PUSH() {
 }
 #pragma endregion
 
 #pragma region SPC_SET
-_inline void SET(uint8_t *A, uint8_t flags) {
+static void SET(uint8_t *A, uint8_t flags) {
 	*A |= flags;
 }
-_inline void fs02_SET1() {
+static void fs02_SET1() {
 	SET(direct(0), 0x01);
 	program_counter += 2;
 }
-_inline void fs22_SET1() {
+static void fs22_SET1() {
 	SET(direct(0), 0x02);
 	program_counter += 2;
 }
-_inline void fs43_SET1() {
+static void fs43_SET1() {
 	SET(direct(0), 0x04);
 	program_counter += 2;
 }
-_inline void fs62_SET1() {
+static void fs62_SET1() {
 	SET(direct(0), 0x08);
 	program_counter += 2;
 }
-_inline void fs82_SET1() {
+static void fs82_SET1() {
 	SET(direct(0), 0x10);
 	program_counter += 2;
 }
-_inline void fsA2_SET1() {
+static void fsA2_SET1() {
 	SET(direct(0), 0x20);
 	program_counter += 2;
 }
-_inline void fsC2_SET1() {
+static void fsC2_SET1() {
 	SET(direct(0), 0x40);
 	program_counter += 2;
 }
-_inline void fsE2_SET1() {
+static void fsE2_SET1() {
 	SET(direct(0), 0x80);
 	program_counter += 2;
 }
-_inline void fs80_SETC() {
+static void fs80_SETC() {
 	SET(&PSW, CARRY_FLAG);
 	program_counter += 1;
 }
-_inline void fs40_SETP() {
+static void fs40_SETP() {
 	SET(&PSW, P_FLAG);
 	program_counter += 1;
 }
 #pragma endregion
 
 #pragma region SPC_TCALL
-_inline void TCALL(uint16_t addr) {
+static void TCALL(uint16_t addr) {
 	uint16_t pc_backup = program_counter;
 	program_counter = addr;
 	spc700_execute_next_instruction();
 	program_counter = pc_backup;
 }
-_inline void fs01_TCALL() {
+static void fs01_TCALL() {
 	TCALL(0xFFDE);
 	program_counter += 1;
 }
-_inline void fs11_TCALL() {
+static void fs11_TCALL() {
 	TCALL(0xFFDC);
 	program_counter += 1;
 }
-_inline void fs21_TCALL() {
+static void fs21_TCALL() {
 	TCALL(0xFFDA);
 	program_counter += 1;
 }
-_inline void fs31_TCALL() {
+static void fs31_TCALL() {
 	TCALL(0xFFD8);
 	program_counter += 1;
 }
-_inline void fs41_TCALL() {
+static void fs41_TCALL() {
 	TCALL(0xFFD6);
 	program_counter += 1;
 }
-_inline void fs51_TCALL() {
+static void fs51_TCALL() {
 	TCALL(0xFFD4);
 	program_counter += 1;
 }
-_inline void fs61_TCALL() {
+static void fs61_TCALL() {
 	TCALL(0xFFD2);
 	program_counter += 1;
 }
-_inline void fs71_TCALL() {
+static void fs71_TCALL() {
 	TCALL(0xFFD0);
 	program_counter += 1;
 }
-_inline void fs81_TCALL() {
+static void fs81_TCALL() {
 	TCALL(0xFFCE);
 	program_counter += 1;
 }
-_inline void fs91_TCALL() {
+static void fs91_TCALL() {
 	TCALL(0xFFCC);
 	program_counter += 1;
 }
-_inline void fsA1_TCALL() {
+static void fsA1_TCALL() {
 	TCALL(0xFFCA);
 	program_counter += 1;
 }
-_inline void fsB1_TCALL() {
+static void fsB1_TCALL() {
 	TCALL(0xFFC8);
 	program_counter += 1;
 }
-_inline void fsC1_TCALL() {
+static void fsC1_TCALL() {
 	TCALL(0xFFC6);
 	program_counter += 1;
 }
-_inline void fsD1_TCALL() {
+static void fsD1_TCALL() {
 	TCALL(0xFFC4);
 	program_counter += 1;
 }
-_inline void fsE1_TCALL() {
+static void fsE1_TCALL() {
 	TCALL(0xFFC2);
 	program_counter += 1;
 }
-_inline void fsF1_TCALL() {
+static void fsF1_TCALL() {
 	TCALL(0xFFC0);
 	program_counter += 1;
 }
 #pragma endregion
 
 #pragma region SPC_UNCATEGORISED
-_inline void fs3F_CALL() {
+static void fs3F_CALL() {
 }
-_inline void fsDE_CBNE() {
+static void fsDE_CBNE() {
 }
-_inline void fs2E_CBNE() {
+static void fs2E_CBNE() {
 }
-_inline void fsDF_DAA() {
+static void fsDF_DAA() {
 }
-_inline void fsBE_DAS() {
+static void fsBE_DAS() {
 }
-_inline void fsFE_DBNZ() {
+static void fsFE_DBNZ() {
 }
-_inline void fs6E_DBNZ() {
+static void fs6E_DBNZ() {
 }
-_inline void fsC0_DI() {
+static void fsC0_DI() {
 }
-_inline void fs9E_DIV() {
+static void fs9E_DIV() {
 }
-_inline void fsA0_EI() {
+static void fsA0_EI() {
 }
-_inline void fsCF_MUL() {
-}
-
-_inline void fs00_NOP() {
+static void fsCF_MUL() {
 }
 
-_inline void fsEA_NOT1() {
-}
-_inline void fsED_NOTC() {
+static void fs00_NOP() {
 }
 
-_inline void fs4F_PCALL() {
+static void fsEA_NOT1() {
 }
-_inline void fs6F_RET() {
+static void fsED_NOTC() {
+}
+
+static void fs4F_PCALL() {
+}
+static void fs6F_RET() {
 	program_counter = stack_pop_8();
 }
-_inline void fs7F_RETI() {
+static void fs7F_RETI() {
 }
-_inline void fsEF_SLEEP() {
+static void fsEF_SLEEP() {
 }
-_inline void fsFF_STOP() {
+static void fsFF_STOP() {
 }
 
-_inline void fs4E_TCLR1() {
+static void fs4E_TCLR1() {
 	uint8_t *a = absolute();
 	uint16_t a_8 = *a;
 	a_8 = a_8 & (~A);
@@ -1228,7 +1230,7 @@ _inline void fs4E_TCLR1() {
 	spc_set_PSW_register(res, ZERO_FLAG | NEGATIVE_FLAG);
 	program_counter += 3;
 }
-_inline void fs0E_TSET1() {
+static void fs0E_TSET1() {
 	uint8_t *a = absolute();
 	uint16_t a_8 = *a;
 	a_8 = (a_8 | A);
@@ -1237,7 +1239,7 @@ _inline void fs0E_TSET1() {
 	spc_set_PSW_register(res, ZERO_FLAG | NEGATIVE_FLAG);
 	program_counter += 3;
 }
-_inline void fs9F_XCN() {
+static void fs9F_XCN() {
 	A = (A >> 4) | (A << 4);
 	program_counter += 1;
 }
