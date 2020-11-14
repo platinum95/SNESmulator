@@ -1,20 +1,20 @@
-CC          = gcc
+CC		    = gcc
 INCLUDES    = -I$(PWD)/include -I$(PWD)/CMore/
-CFLAGS      = $(INCLUDES) -MMD -O0 -w -g -Werror=vla -march=native
-LIBS        =
+CFLAGS	    = $(INCLUDES) -MMD -O0 -w -g -Werror=vla -march=native
+LIBS		=
 
-DEFINES     =
-DEFINES    :=
+DEFINES	 =
+DEFINES	:=
 
-ROOT_DIR        = $(CURDIR)
-INCLUDE_DIR 	= $(ROOT_DIR)/include
-SRC_DIR         = $(ROOT_DIR)/src
-OBJ_DIR         = $(ROOT_DIR)/obj
-TESTS_DIR       = $(ROOT_DIR)/src/tests
-RES_DIR         = $(ROOT_DIR)/res
-RAW_RES_DIR     = $(ROOT_DIR)/rawres
-TOOLS_DIR       = $(SRC_DIR)/tools
-CMORE_DIR       = $(ROOT_DIR)/CMore
+ROOT_DIR	= $(CURDIR)
+INCLUDE_DIR = $(ROOT_DIR)/include
+SRC_DIR     = $(ROOT_DIR)/src
+OBJ_DIR     = $(ROOT_DIR)/obj
+TESTS_DIR   = $(ROOT_DIR)/src/tests
+RES_DIR     = $(ROOT_DIR)/res
+RAW_RES_DIR = $(ROOT_DIR)/rawres
+TOOLS_DIR	= $(SRC_DIR)/tools
+CMORE_DIR	= $(ROOT_DIR)/CMore
 
 DIRS_TO_MAKE   := $(OBJ_DIR) $(RES_DIR)
 
@@ -29,7 +29,7 @@ TOOLS_OBJ   = $(patsubst $(TOOLS_DIR)/%.c,$(OBJ_DIR)/%.o,$(TOOLS))
 TOOLS_BIN   = $(patsubst $(OBJ_DIR)/%.o,$(ROOT_DIR)/%,$(TOOLS_OBJ))
 CMORE_STATIC_LIB = $(ROOT_DIR)/cmore.a
 
-DEP := $(patsubst $(OBJ_DIR)/%.o,$(OBJ_DIR)/%.d,$(OBJ))
+#DEP := $(patsubst $(OBJ_DIR)/%.o,$(OBJ_DIR)/%.d,$(OBJ))
 
 export CMORE_STATIC_LIB
 export CFLAGS
