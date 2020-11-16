@@ -32,7 +32,7 @@ uint8_t hardware_registers[16383];
 #pragma endregion
 
 uint8_t *access_address(unsigned int addr) {
-    uint8_t bank = addr >> 16;
+    uint8_t bank = ( addr >> 16 ) & 0xFFFF;
     uint16_t offset = addr & 0xFFFF;
     uint8_t *dataloc = accessAddressFromBank(bank, offset);
     if (dataloc == NULL)
@@ -218,6 +218,7 @@ uint8_t *accessAddressFromBank_hiRom(uint8_t bank, uint16_t offset) {
     return NULL;
 }
 
+// TODO - preprocess-out based on endianess
 //Retrieve 2 byte unsigned short from location
 uint16_t get2Byte(uint8_t* loc) {
     uint16_t out = loc[1];
@@ -233,13 +234,13 @@ uint32_t get4Byte(uint8_t* loc) {
     return out;
 }
 
-//Retrieve 4 byte unsigned integer from location
-uint32_t get3Byte(uint8_t* loc) {
+//Retrieve 3 byte unsigned integer from location
+uint32_t get3Byte( uint8_t* loc ) {
     uint32_t out = loc[2];
-    out = out << 8;
-    out = out | (0x00FF & loc[1]);
-    out = out << 8;
-    out = out | (0x00FF & loc[0]);
+    out <<= 8;
+    out |= (uint32_t)loc[ 1 ];
+    out <<= 8;
+    out |= (uint32_t) loc[ 0 ];
     return out;
 }
 

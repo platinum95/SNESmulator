@@ -11,15 +11,6 @@
 
 #include "system.h"
 
-#define CARRY_FLAG  0x1
-#define ZERO_FLAG 0x2
-#define INTERRUPT_FLAG 0x04
-#define DECIMAL_FLAG 0x08
-#define OVERFLOW_FLAG 0x40
-#define NEGATIVE_FLAG 0x80
-#define M_FLAG 0x20
-#define X_FLAG 0x10
-
 static bool inEmulationMode = 1, carryIsEmulationBit = 0;
 
 static char registers[30 * 2];
@@ -143,18 +134,6 @@ void InitialiseCpu( RomTypes romType ) {
     
     PopulateInstructions();
 }
-const char *byte_to_binary(uint8_t x) {
-    static char b[9];
-    b[0] = '\0';
-
-    int z;
-    for (z = 128; z > 0; z >>= 1) {
-        strcat(b, ((x & z) == z) ? "1" : "0");
-    }
-
-    return b;
-}
-
 
 struct execution createEx() {
     struct execution ex;
@@ -173,16 +152,17 @@ void ExecuteNextInstruction() {
     static int counter = 0;
     counter++;
     uint8_t *romLoc = getRomData();
-    uint32_t instruction_addr = getMappedInstructionAddr(program_bank_register, program_counter);
-    //    uint8_t current_instruction = (uint8_t) *(access_address(instruction_addr));
+    uint32_t instruction_addr = getMappedInstructionAddr( program_bank_register, program_counter );
+
     instruction_addr &= ~0x800000;
     uint8_t current_instruction = getRomData()[instruction_addr];
-    printf("\n%03i | %02x%04x | %02x | A:%04x | X:%04x | Y:%04x | P:%s\n", counter, program_bank_register, program_counter, current_instruction, accumulator, X, Y, byte_to_binary(p_register));
+    
+    printf( "\n%03i | %02x:\n", counter, current_instruction );
 
     if (counter == 1)
         start_comp();
 
-    if (current_instruction == 0xd0 && prev_instr == 0xcd) {
+    /*if (current_instruction == 0xd0 && prev_instr == 0xcd) {
         uint8_t comparison;
         do{
             struct execution currentEx = createEx();
@@ -190,10 +170,10 @@ void ExecuteNextInstruction() {
         } while (comparison != 0);
 
     }
-    else {
+    else*/ {
         struct execution currentEx = createEx();
         uint8_t comparison = compare(currentEx);
-        if (comparison == 1 || comparison == 2) {
+        if ( comparison != 0 ) {
             int hello = 0;
         }
     }
@@ -201,16 +181,12 @@ void ExecuteNextInstruction() {
     //bsnes bvs - 8567. our bvs - 8545
     //next is -> their Z-z at 23148, ours at 23138
     // ours 23178, theirs 23196
-    if (current_instruction == 0x80)
+    /*if (current_instruction == 0x80)
         work_you_fuck();
-    else {
+    else*/ {
         void(*next_instruction)() = *instructions[current_instruction];
          next_instruction();
     }
-
-    
-    
-
 }
 
 void set_p_register_16(uint16_t val, uint8_t flags) {
@@ -251,8 +227,9 @@ int x_flag() {
         return 0;
 }
 
-
 #pragma region addressing_modes
+
+// TODO - bank + address could be broken into a struct
 
 uint8_t immediate_8() {
     uint32_t mapped_addr = getMappedInstructionAddr(program_bank_register, program_counter+1);
@@ -281,51 +258,44 @@ short relative_long() {
     return s_val;
 }
 
+#define GET_FULL_ADDR( offset ) ( data_bank_register << 16 ) | (uint32_t)( offset )
+
+uint8_t* direct_indirect_indexed_addr(){
+    return accessAddressFromBank( 0x00, direct_page + immediate_8() );
+}
+
 uint16_t direct() {
-    uint8_t operand = immediate_8();
-    uint16_t new_addr = direct_page + operand;
-    return new_addr;
+    return direct_page + immediate_8();
 }
 
 uint32_t direct_indexed_x() {
-    uint8_t operand = immediate_8();
-    return direct_page + operand + X;
+    return direct_page + immediate_8() + X;
 }
 uint32_t direct_indexed_y() {
-    uint8_t operand = immediate_8();
-    return direct_page + operand + Y;
+    return direct_page + immediate_8() + Y;
 }
-uint32_t direct_indirect() {
-    uint32_t new_addr_addr = direct();
-    uint16_t new_addr = get2Byte(&accessSystemRam()[new_addr_addr]);
-    return data_bank_register + new_addr;
-}
+
 uint32_t direct_indexed_indirect() {
-    uint8_t operand = immediate_8();
-    uint16_t dp_addr = operand + direct_page + X;
-    uint16_t new_addr = get2Byte(&accessSystemRam()[dp_addr]);
-    return (uint32_t)(data_bank_register + new_addr);
+    uint8_t* indirectAddr = accessAddressFromBank( 0x00, immediate_8() + direct_page + X );
+    return GET_FULL_ADDR( get2Byte( indirectAddr ) );
 }
-uint32_t direct_indirect_indexed() {
-    uint8_t operand = immediate_8();
-    uint16_t base_addr = get2Byte(&accessSystemRam()[direct_page + operand]);
-    uint32_t new_addr = data_bank_register + base_addr + Y;
-    return new_addr;
+
+uint32_t direct_indirect() {
+    uint8_t* indirectAddr = accessAddressFromBank( data_bank_register, direct() );
+    return GET_FULL_ADDR( get2Byte( indirectAddr ) );
+
 }
+
 uint32_t direct_indirect_long() {
-    uint32_t new_addr_addr = direct();
-    uint32_t new_addr = get3Byte(&accessSystemRam()[new_addr_addr]);
-    return new_addr;
+    return get3Byte( accessAddressFromBank( 0x00, direct() ) );
 }
+
+uint32_t direct_indirect_indexed() {
+    return GET_FULL_ADDR( get2Byte( direct_indirect_indexed_addr() ) + Y );
+}
+
 uint32_t direct_indirect_indexed_long() {
-    uint8_t operand = immediate_8();
-    uint16_t base_addr = direct_page + operand;
-
-    uint8_t *pointer = accessAddressFromBank(0x00, base_addr);
-    uint16_t new_addr = get2Byte(pointer);
-    uint8_t *dataLoc = accessAddressFromBank(pointer[2], new_addr + Y);
-    return dataLoc;
-
+    return get3Byte( direct_indirect_indexed_addr() ) + Y;
 }
 
 uint32_t absolute() {
@@ -676,97 +646,64 @@ void PopulateInstructions() {
 #pragma region data_access
 
 uint8_t direct_8() {
-    uint16_t new_page = direct();
-    uint8_t data = accessSystemRam()[new_page];
-    return data;
+    return *accessAddressFromBank( 0x00, direct() );
 };
 uint16_t direct_16() {
-    uint16_t new_page = direct();
-    uint16_t data = get2Byte(&accessSystemRam()[new_page]);
+    return get2Byte( accessAddressFromBank( 0x00, direct() ) );
 };
 
 uint8_t direct_indexed_x_8() {
-    uint32_t new_addr = direct_indexed_x();
-    uint8_t data = (uint8_t)*access_address(new_addr);
-    return data;
+    return *access_address( direct_indexed_x() );
 };
 uint16_t direct_indexed_x_16() {
-    uint32_t new_addr = direct_indexed_x();
-    uint16_t data = get2Byte(access_address(new_addr));
-    return data;
+    return get2Byte( direct_indexed_x() );
 };
 
 uint8_t direct_indexed_y_8() {
-    uint32_t new_addr = direct_indexed_y();
-    uint8_t data = (uint8_t)*access_address(new_addr);
-    return data;
+    return access_address( direct_indexed_y() );
 };
 uint16_t direct_indexed_y_16() {
-    uint32_t new_addr = direct_indexed_y();
-    uint16_t data = get2Byte(access_address(new_addr));
-    return data;
+    return get2Byte( access_address( direct_indexed_y() ) );
 };
 
 uint8_t direct_indirect_8() {
-    uint32_t new_addr = direct_indirect();
-    uint8_t data = (uint8_t)*access_address(new_addr);
-    return data;
+    return *access_address( direct_indirect () );;
 };
 uint16_t direct_indirect_16() {
-    uint32_t new_addr = direct_indirect();
-    uint8_t data = get2Byte(access_address(new_addr));
-    return data;
+    return get2Byte( access_address( direct_indirect() ) );
 };
 
 uint8_t direct_indexed_indirect_8() {
-    uint32_t operand = direct_indexed_indirect();
-    uint8_t data = access_address(operand)[0];
-    return data;
+    return *access_address( direct_indexed_indirect() );
 }
 uint16_t direct_indexed_indirect_16() {
-    uint32_t operand = direct_indexed_indirect();
-    uint16_t data = get2Byte(access_address(operand));
-    return data;
+    return get2Byte( access_address( direct_indexed_indirect() ) );
 }
-
 
 uint8_t direct_indirect_indexed_8() {
-    uint32_t new_addr = direct_indirect_indexed();
-    uint8_t data = (uint8_t)*access_address(new_addr);
-    return data;
+    return *access_address( direct_indirect_indexed() );
 }
 uint16_t direct_indirect_indexed_16() {
-    uint32_t new_addr = direct_indirect_indexed();
-    uint16_t data = get2Byte(access_address(new_addr));
-    return data;
+    return get2Byte( access_address( direct_indirect_indexed() ) );
 }
 
 uint8_t direct_indirect_long_8() {
-    uint32_t new_addr = direct_indirect_long();
-    uint8_t data = (uint8_t)*access_address(new_addr);
-    return data;
+    return *access_address( direct_indirect_long() );;
 }
 uint16_t direct_indirect_long_16() {
-    uint32_t new_addr = direct_indirect_long();
-    uint16_t data = get2Byte(access_address(new_addr));
-    return data;
+    return get2Byte( access_address( direct_indirect_long() ) );
 }
 
 uint8_t direct_indirect_indexed_long_8() {
-    uint8_t* new_addr = direct_indirect_indexed_long();
-    uint8_t data = *new_addr;
-    return data;
+    return *access_address( direct_indirect_indexed_long() );
 }
 uint16_t direct_indirect_indexed_long_16() {
-    uint8_t* new_addr = direct_indirect_indexed_long();
-    uint16_t data = get2Byte(new_addr);
-    return data;
+    return get2Byte( access_address( direct_indirect_indexed_long() ) );
 }
 
 uint8_t absolute_8() {
     uint32_t new_addr = absolute();
-    uint8_t data = (uint8_t)*access_address(new_addr);
-    return data;
+    return *access_address( new_addr );
 }
 uint16_t absolute_16() {
     uint32_t new_addr = absolute();
@@ -3914,18 +3851,18 @@ void fEB_XBA(){
 }
 
 //XCE    FB    Implied    �MX�CE    1
+// Exchange carry and emulation flags
 void fFB_XCE(){
-    uint8_t carry_holder = p_register & CARRY_FLAG;
+    uint8_t carryVal = p_register & CARRY_FLAG;
+
     p_register &= ~CARRY_FLAG;
-    p_register |= emulation_flag;
-    emulation_flag = carry_holder;
+    // TODO - Ground truth is apparently broken, so nix this while developing
+    if ( emulation_flag )
+        p_register |= CARRY_FLAG;
+    emulation_flag = carryVal;
     
-    if (emulation_flag == 0x0) {
-        inEmulationMode = 0;
-    }
-    else {
-        inEmulationMode = 1;
-    }
+    inEmulationMode = emulation_flag;
+
     program_counter++;
 }
 

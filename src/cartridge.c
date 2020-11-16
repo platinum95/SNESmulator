@@ -29,6 +29,8 @@ int LoadRom( const char* filepath ) {
 
     emulatedCartridge.romType = loScore > hiScore ? LoRom : HiRom;
 
+    // TODO - fix this bug
+    emulatedCartridge.romType = HiRom;
     return 0;
 }
 

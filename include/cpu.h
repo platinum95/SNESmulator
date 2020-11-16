@@ -4,6 +4,15 @@
 #include "cartridge.h"
 #include <stdint.h>
 
+#define CARRY_FLAG  0x1
+#define ZERO_FLAG 0x2
+#define INTERRUPT_FLAG 0x04
+#define DECIMAL_FLAG 0x08
+#define OVERFLOW_FLAG 0x40
+#define NEGATIVE_FLAG 0x80
+#define M_FLAG 0x20
+#define X_FLAG 0x10
+
 void InitialiseCpu( RomTypes romType );
 
 void ExecuteNextInstruction();
