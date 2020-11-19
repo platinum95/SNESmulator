@@ -13,7 +13,24 @@
     Emulation of the SPC700 sound chip
     Aint no simple chip herey boy.
 
+    References:
+    https://wiki.superfamicom.org/spc700-reference
+    https://github.com/gilligan/snesdev/blob/master/docs/spc700.txt
+    http://anyplatform.net/media/guides/cpus/SPC700%20Processor%20Data.txt
+
 */
+
+// TODO:
+// - PC incrementing
+// - JMP (1F) addressing confirmation
+// - Register (mem) access
+// - Clear-on-read addresses
+// - Timers
+// - Read-back on some ops
+// - Other TODO notes
+
+
+// Little endian
 
 /*
 Basic memory map
@@ -24,9 +41,20 @@ Basic memory map
 0xFFC0 - 0xFFFF - IPL ROM
 */
 
-void(*spc700_instructions[16 * 16])();
+// TODO - other compilers
+#define ATTR_PACKED __attribute__((__packed__))
 
-typedef struct Registers {
+typedef struct SPC700InstructionEntry {
+    void (*instruction)();
+    uint8_t opLength;
+    uint8_t opCycles;
+} SPC700InstructionEntry;
+
+//void(*spc700_instructions[16 * 16])();
+
+//SPC700InstructionEntry instructions[ 0xFF ];
+
+typedef struct ATTR_PACKED Registers {
     uint8_t undocumented;
     uint8_t control;
     uint8_t dspAddress;
@@ -47,10 +75,9 @@ typedef struct Registers {
 
 /* Memory and registers */
 static uint8_t spc_memory[ 0xFFFF + 0x01 ];
-static uint16_t program_counter;
+static uint16_t program_counter, next_program_counter, curr_program_counter;
 static uint8_t A, X, Y, SP, PSW;
 static Registers* registers = ( spc_memory + 0X00F0 );
-
 
 /* Status register flags */
 #define SPC_CARRY_FLAG  0x1
@@ -63,18 +90,33 @@ static Registers* registers = ( spc_memory + 0X00F0 );
 #define SPC_NEGATIVE_FLAG 0x80
 
 /* 16 bit "register" from A and Y registers */
-static uint16_t YA() {
-    uint16_t toRet = Y;
-    toRet <<= 8;
-    toRet |= A;
-    return toRet;
+static uint16_t getYA() {
+    return ( ( (uint16_t) Y ) << 8 ) | A;
+}
+
+static void storeYA( uint16_t YA ) {
+    Y = ( YA >> 8 ) & 0x00FF;
+    A = YA & 0x00FF;
+}
+
+// TODO - consider renaming to getWord
+uint16_t getWord(uint8_t* loc) {
+    uint16_t out = loc[1];
+    out = out << 8;
+    out = out | (0x00FF & loc[0]);
+    return out;
+}
+
+// TODO - consider renaming to setWord
+void setWord( uint8_t* loc, uint16_t val ) {
+    loc[ 1 ] = (uint8_t)( ( val >> 8 ) & 0x00FF );
+    loc[ 0 ] = (uint8_t)( val & 0x00FF );
 }
 
 /* 16 bit stack pointer = 0x0100 | SP_register */
 static uint16_t get_stack_pointer() {
     uint16_t toRet = SP;
     return toRet | 0x01;
-
 }
 
 /* Initialise (power on) */
@@ -108,29 +150,35 @@ uint8_t *spc_memory_map( uint16_t addr ) {
     }
 }
 
-uint8_t *accessPageAddr( uint8_t addr )
-{
+uint8_t *accessPageAddr( uint8_t addr ) {
     return spc_memory_map( ( ( PSW & SPC_P_FLAG ) ? 0x0100 : 0x0000 ) + addr );
 }
 
 /* Access the 4 visible bytes from the CPU */
-uint8_t *access_spc_snes_mapped(uint16_t addr) {
+uint8_t *access_spc_snes_mapped( uint16_t addr ) {
     addr = addr - 0x2140 + 0x00f4;
-    if (addr < 0x00f4 || addr > 0x00f7)
+    
+    if ( addr < 0x00f4 || addr > 0x00f7 ) {
         return NULL;
-    else
-        return &spc_memory[addr];
+    }
+    
+    return spc_memory_map( addr );
 }
 
 /* Execute next instruction, update PC and cycle counter etc */
 void spc700_execute_next_instruction() {
-    void(*next_instruction)() = *spc700_instructions[0x00];
-    next_instruction();
+    curr_program_counter = program_counter;
+    SPC700InstructionEntry *entry = &instructions[ *spc_memory_map( program_counter++ ) ];
+    next_program_counter = curr_program_counter + entry->opLength;
+    entry->instruction();
+
+    // Operation may mutate next_program_counter if it branches/jumps
+    program_counter = next_program_counter;
 }
 
 #pragma region SPC_ADDRESSING_MODES
 static uint8_t *immediate() {
-    return &spc_memory[ program_counter ];
+    return spc_memory_map( program_counter++ );
 }
 static uint8_t immediate_8() {
     return *immediate();
@@ -162,22 +210,22 @@ static uint8_t *direct( uint8_t offset ) {
     return accessPageAddr( immediate_8() + offset );
 }
 static uint8_t direct_8( uint8_t offset ) {
-    return *direct( 0 );
+    return *direct( offset );
 }
 static uint16_t direct_16( uint8_t offset ) {
-    return get2Byte( direct( offset ) );
+    return getWord( direct( offset ) );
 }
 static uint8_t direct_indexed_X_8() {
     return *direct( X );
 }
 static uint16_t direct_indexed_X_16() {
-    return get2Byte( direct( X ) );
+    return getWord( direct( X ) );
 }
 static uint8_t direct_indexed_Y_8() {
     return *direct( Y );
 }
 static uint16_t direct_indexed_Y_16() {
-    return get2Byte( direct( Y ) );
+    return getWord( direct( Y ) );
 }
 
 static uint8_t *direct_indexed_X_indirect() {
@@ -203,7 +251,9 @@ static uint8_t indirect_y_indexed_8() {
 }
 
 static uint16_t absolute_addr() {
-    return get2Byte( immediate() );
+    uint16_t word = getWord( spc_memory_map( program_counter ) );
+    program_counter += 2;
+    return word;
 }
 static uint8_t *absolute( uint8_t offset ) {
     return spc_memory_map( absolute_addr() + offset );
@@ -212,7 +262,7 @@ static uint8_t absolute_8() {
     return *absolute( 0 );
 }
 static uint16_t absolute_16() {
-    return get2Byte( absolute( 0 ) );
+    return getWord( absolute( 0 ) );
 }
 static uint8_t absolute_membit( uint8_t **mem ) {
     uint16_t operand = absolute_addr();
@@ -238,12 +288,11 @@ static uint8_t stack_pop_8(){
     return spc_memory[ SP ];
 }
 
-// TODO - switch to 1 and 2 param ops
 // TODO - increment PC as data consumed (fix param ordering)
 
 // DIRECT OPS START
 #define DIRECT_D_OP( op ) \
-    op( direct() );
+    op( direct( 0 ) );
 
 #define DIRECT_A_D_OP( op ) \
     op( &A, direct( 0 ) );
@@ -263,16 +312,10 @@ static uint8_t stack_pop_8(){
 #define DIRECT_D_Y_OP( op ) \
     op( direct( 0 ), &Y );
 
-#define DIRECT_D_YA_OP( op ) \
-    uint16_t YA; /* TODO - get YA */ \
-    uint16_t o; \
-    op( &o, YA ); \
-    /* TODO - set D word */ \
-
 #define DIRECT_YA_D_OP( op ) \
-    uint16_t YA; \
+    uint16_t YA = getYA(); \
     op( &YA, direct( 0 ) ); \
-    /* TODO - get YA/set Y and A */ \
+    storeYA( YA );
 // DIRECT OPS END
 
 // X-INDEXED DIRECT PAGE OPS START
@@ -292,8 +335,9 @@ static uint8_t stack_pop_8(){
     op( direct( X ), &A );
 
 #define X_INDEXED_DIRECT_PAGE_DX_R_OP( op ) \
-    uint8_t nearLabel = 0x00; /* TODO - get nearLabel */ \
+    uint8_t nearLabel = immediate_8(); \
     op( direct( X ), &nearLabel );
+    // TODO - ordering \
 // X-INDEXED DIRECT PAGE OPS END
 
 // Y-INDEXED DIRECT PAGE OPS START
@@ -313,7 +357,6 @@ static uint8_t stack_pop_8(){
 // INDIRECT OPS END
 
 // INDIRECT AUTO INC OPS START
-// TODO - verify inc/dec ordering
 #define INDIRECT_AUTO_INC_X_A_OP( op ) \
     op( indirect_X(), &A ); \
     ++X; \
@@ -365,7 +408,7 @@ static uint8_t stack_pop_8(){
     uint8_t *loc; \
     uint8_t bit = absolute_membit( &loc ); \
     uint8_t bMask = 0x01 << bit; \
-    ABSOLUTE_BOOLEAN_BIT_BASE( op, loc, bMask, (*loc) & bMask );
+    *loc = ( *loc & ~bMask ) | ( op( *loc & bMask ) ? bMask : 0x00 );
     
 #define ABSOLUTE_BOOLEAN_BIT_C_MB_OP( op ) \
     uint8_t *loc; \
@@ -413,7 +456,7 @@ static uint8_t stack_pop_8(){
 // ABSOLUTE OPS END
 
 // ABSOLUTE X-INDEXED INDIRECT OPS START
-#define ABSOLUTE_X_INDEXED_INDIRECT( op )\
+#define ABSOLUTE_X_INDEXED_INDIRECT_ADDR_OP( op )\
     op( absolute_addr() + X );
 // ABSOLUTE X-INDEXED INDIRECT OPS END
 
@@ -451,13 +494,15 @@ static uint8_t stack_pop_8(){
 
 // RELATIVE OPS START
 #define RELATIVE_OP( op ) \
-    op( program_counter + immediate_8() ); // TODO - verify this
+    op( curr_program_counter + immediate_8() ); // TODO - verify this
 
 #define RELATIVE_OP_D_R( op ) \
-    op( direct(), immediate() ); // TODO - ordering
+    uint8_t *d = direct( 0 ); \
+    uint8_t *r = immediate(); \
+    op( d, r ); // TODO - ordering
 
 #define RELATIVE_OP_Y_R( op ) \
-    op( &Y, immediate() ); // TODO - ordering
+    op( &Y, immediate() );
 // RELATIVE OPS END
 
 // IMMEDIATE OPS START
@@ -510,12 +555,12 @@ static uint8_t stack_pop_8(){
 #define IMPLIED_YA_OP( op ) \
     uint16_t YA; \
     op( &YA ); \
-    /* TODO - set YA */
+    storeYA( YA );
 
 #define IMPLIED_YA_X_OP( op ) \
     uint16_t YA; \
     op( &YA, &X ); \
-    /* TODO - set YA */
+    storeYA( YA );
 // IMPLIED OPS END
 
 
@@ -534,6 +579,42 @@ void spc_set_PSW_register( uint8_t val, uint8_t flags ) {
 }
 
 #pragma region SPC_INSTRUCTIONS
+
+
+#pragma region SPC_STACK
+static void POP( uint8_t *O1 ) {
+    *O1 = accessPageAddr( ++SP );
+}
+
+static void PUSH( uint8_t *O1 ) {
+    *accessPageAddr( SP-- ) = *O1;
+}
+
+static void fsAE_POP() {
+    IMPLIED_A_OP( POP );
+}
+static void fs8E_POP() {
+    IMPLIED_PSW_OP( POP );
+}
+static void fsCE_POP() {
+    IMPLIED_X_OP( POP );
+}
+static void fsEE_POP() {
+    IMPLIED_Y_OP( POP );
+}
+static void fs2D_PUSH() {
+    IMPLIED_A_OP( PUSH );
+}
+static void fs0D_PUSH() {
+    IMPLIED_PSW_OP( PUSH );
+}
+static void fs4D_PUSH() {
+    IMPLIED_X_OP( PUSH );
+}
+static void fs6D_PUSH() {
+    IMPLIED_Y_OP( PUSH );
+}
+#pragma endregion
 
 #pragma region SPC_ADD_SBC
 
@@ -560,17 +641,9 @@ static void ADC( uint8_t *O1, uint8_t *O2 ) {
     *O1 = result8;
 }
 
-static void ADDW( uint16_t *O1, uint8_t *O2 ) {
-    // TODO
-}
-
 static void SBC( uint8_t *A, uint8_t *B ) {
     uint8_t Bneg = ( ~( *B + ( PSW & SPC_CARRY_FLAG ? 0 : 1 ) ) ) + 1;
     ADC( A, &Bneg );
-}
-
-static void SUBW( uint16_t *O1, uint8_t *O2 ) {
-    // TODO
 }
 
 static void fs99_ADC() {
@@ -611,7 +684,17 @@ static void fs98_ADC() {
 }
 static void fs7A_ADDW() {
     // TODO
-    DIRECT_YA_D_OP( ADDW );
+    uint16_t YA = getYA();
+    uint16_t O1 = direct_16( 0 );
+    uint32_t result = (uint32_t)YA + (uint32_t)O1;
+    PSW &= ~( SPC_NEGATIVE_FLAG | SPC_OVERFLOW_FLAG | SPC_HALF_CARRY_FLAG | SPC_ZERO_FLAG | SPC_CARRY_FLAG );
+    PSW = PSW
+        | ( ( ( ~( YA ^ O1 ) & ( YA ^ result ) ) & 0x8000 ) ? SPC_OVERFLOW_FLAG : 0x00 )
+        | ( ( result > 0xFFFF ) ? SPC_CARRY_FLAG : 0x00 )
+        | ( ( ( ( YA & 0x0FFF ) + ( O1 & 0x0FFF ) ) > 0x0FFF ) ? SPC_HALF_CARRY_FLAG : 0x00 )
+        | ( ( (uint16_t) result == 0 ) ? SPC_ZERO_FLAG : 0x00 )
+        | ( ( result & 0x8000 ) ? SPC_NEGATIVE_FLAG : 0x00 );
+    storeYA( YA );
 }
 
 static void fsB9_SBC() {
@@ -652,7 +735,27 @@ static void fsB8_SBC() {
 }
 static void fs9A_SUBW() {
     // TODO
-    DIRECT_YA_D_OP( SUBW );
+    uint32_t YA = (uint32_t) getYA();
+    uint32_t O1 = (uint32_t) getWord( direct( 0 ) );
+
+    uint32_t result = YA - O1;
+    bool overflow = ( ( YA ^ O1 ) & ( YA ^ result ) ) & 0x8000;
+    bool carry = ( result <= 0xFFFF );
+    
+    uint16_t temp = ( ( YA & 0x0F00 ) - ( O1 & 0x0F00 ) ) >> 8;
+    if ( YA & 0xFF < O1 & 0xFF ) {
+      --temp;
+    }
+    
+    storeYA( (uint8_t)( result & 0x0000FFFF ) );
+
+    PSW &= ~( SPC_NEGATIVE_FLAG | SPC_OVERFLOW_FLAG | SPC_HALF_CARRY_FLAG | SPC_ZERO_FLAG | SPC_CARRY_FLAG );
+    PSW = PSW
+        | ( overflow ? SPC_OVERFLOW_FLAG : 0x00 )
+        | ( carry ? SPC_CARRY_FLAG : 0x00 )
+        | ( ( temp <= 0x0F ) ? SPC_HALF_CARRY_FLAG : 0x00 )
+        | ( ( ( result & 0x0000FFFF ) == 0 ) ? SPC_ZERO_FLAG : 0x00 )
+        | ( ( result & 0x8000 ) ? SPC_NEGATIVE_FLAG : 0x00 );
 }
 
 #pragma endregion 
@@ -661,14 +764,10 @@ static void fs9A_SUBW() {
 static void AND( uint8_t *O1, uint8_t *O2 ) {
     *O1 = *O1 & *O2;
 
-    if ( *O1 == 0 )
-    {
-        PSW |= SPC_ZERO_FLAG;
-    }
-    else if ( *O1 & 0x80 )
-    {
-        PSW |= SPC_NEGATIVE_FLAG;
-    }
+    PSW = PSW
+        & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG )
+        | ( ( *O1 == 0 ) ? SPC_ZERO_FLAG : 0x00 ) 
+        | ( ( *O1 & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 );
 }
 
 static bool AND1( bool A, bool B ) {
@@ -721,60 +820,102 @@ static void fs4A_AND1() {
 #pragma endregion 
 
 #pragma region SPC_BIT_SHIFT
-static void LSR(uint8_t *B) {
+static void LSR( uint8_t *O1 ) {
+    PSW = ( PSW & ~SPC_CARRY_FLAG ) | ( ( *O1 & 0x01 ) ? SPC_CARRY_FLAG : 0x00 );
+    *O1 = ( *O1 >> 1 ) & ~0x7F;
 
+    PSW = ( PSW & ~( SPC_ZERO_FLAG | SPC_NEGATIVE_FLAG ) )
+        | ( ( *O1 == 0x00 ) ? SPC_ZERO_FLAG : 0x00 );
 }
-static void ASL(uint8_t B) {
+static void ASL( uint8_t *O1 ) {
+    PSW = ( PSW & ~SPC_CARRY_FLAG ) | ( ( *O1 & 0x80 ) ? SPC_CARRY_FLAG : 0x00 );
+    *O1 = ( *O1 << 1 ) & 0xFE;
+
+    PSW = ( PSW & ~( SPC_ZERO_FLAG | SPC_NEGATIVE_FLAG ) )
+        | ( ( *O1 == 0x00 ) ? SPC_ZERO_FLAG : 0x00 )
+        | ( ( *O1 & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 );
 }
 
 static void fs1C_ASL() {
+    IMPLIED_A_OP( ASL );
 }
 static void fs0B_ASL() {
+    DIRECT_D_OP( ASL );
 }
 static void fs1B_ASL() {
+    X_INDEXED_DIRECT_PAGE_DX_OP( ASL );
 }
 static void fs0C_ASL() {
+    ABSOLUTE_a_OP( ASL );
 }
 
 static void fs5C_LSR() {
+    IMPLIED_A_OP( LSR );
 }
 static void fs4B_LSR() {
+    DIRECT_D_OP( LSR );
+}
+static void fs5B_LSR() {
+    X_INDEXED_DIRECT_PAGE_DX_OP( LSR );
 }
 static void fs4C_LSR() {
+    ABSOLUTE_a_OP( LSR );
 }
-static void fsAF_LSR() {
+
+static void ROL( uint8_t *O1 ) {
+    uint8_t lsb = PSW & SPC_CARRY_FLAG ? 0x01 : 0x00;
+    PSW = ( PSW & ~SPC_CARRY_FLAG ) | ( ( *O1 & 0x80 ) ? SPC_CARRY_FLAG : 0x00 );
+    *O1 = ( ( *O1 << 1 ) & 0xFE ) | lsb;
+}
+
+static void ROR( uint8_t *O1 ) {
+    uint8_t msb = PSW & SPC_CARRY_FLAG ? 0x80 : 0x00;
+    PSW = ( PSW & ~SPC_CARRY_FLAG ) | ( ( *O1 & 0x01 ) ? SPC_CARRY_FLAG : 0x00 );
+    *O1 = ( ( *O1 >> 1 ) & 0x7F ) | msb;
 }
 
 static void fs3C_ROL() {
+    IMPLIED_A_OP( ROL );
 }
 static void fs2B_ROL() {
+    DIRECT_D_OP( ROL );
 }
 static void fs3B_ROL() {
+    X_INDEXED_DIRECT_PAGE_DX_OP( ROL );
 }
 static void fs2C_ROL() {
+    ABSOLUTE_a_OP( ROL );
 }
+
 static void fs7C_ROR() {
+    IMPLIED_A_OP( ROR );
 }
 static void fs6B_ROR() {
+    DIRECT_D_OP( ROR );
 }
 static void fs7B_ROR() {
+    X_INDEXED_DIRECT_PAGE_DX_OP( ROR );
 }
 static void fs6C_ROR() {
+    ABSOLUTE_a_OP( ROR );
 }
 
 #pragma endregion
 
 #pragma region SPC_BRANCH
 static void BBC( bool O1, uint8_t* r ) {
-    // TODO 
+    if ( O1 ) {
+        program_counter += *r;
+    }
 }
 
 static void BBS( bool O1, uint8_t* r ) {
-    // TODO 
+    if ( O1 ) {
+        program_counter += *r;
+    }
 }
 
-static void JMP( uint16_t addr )
-{
+static void JMP( uint16_t addr ) {
     program_counter = addr;
 }
 
@@ -864,19 +1005,25 @@ static void fs2F_BRA() {
     BranchOnCondition( true );
 }
 static void fs0F_BRK() {
+    // TODO
     PSW |= SPC_BREAK_FLAG;
-    //PUSH( program_counter )
-    //PUSH( PSW )
+    uint8_t r = ( program_counter >> 8 ) & 0x00FF;
+    PUSH( &r );
+    r = program_counter & 0x00FF;
+    PUSH( &r );
+    PUSH( PSW );
+
     PSW &= ~SPC_INTERRUPT_FLAG;
     JMP( 0xFFDE );
 }
 
 static void fs1F_JMP() {
-    ABSOLUTE_a_addr_OP( JMP );
+    // TODO - verify that its 'pc = im_16 + X', not 'pc = mem[ im_16 + X ]'
+    ABSOLUTE_X_INDEXED_INDIRECT_ADDR_OP( JMP );
+    
 }
 static void fs5F_JMP() {
-    // TODO - verify
-    ABSOLUTE_X_INDEXED_INDIRECT( JMP );
+    ABSOLUTE_a_addr_OP( JMP );
 }
 
 #pragma endregion 
@@ -910,13 +1057,13 @@ static void fsF2_CLR1() {
     DIRECT_PAGE_BIT_OP( CLR, 7 );
 }
 
-static void fs12_CLRC() {
+static void fs60_CLRC() {
     CLR( &PSW, SPC_CARRY_FLAG );
 }
-static void fs12_CLRP() {
+static void fs20_CLRP() {
     CLR( &PSW, SPC_P_FLAG );
 }
-static void fs12_CLRB() {
+static void fsE0_CLRV() {
     CLR( &PSW, SPC_BREAK_FLAG );
 }
 #pragma endregion 
@@ -1007,7 +1154,7 @@ static void fs9B_DEC() {
 }
 static void fs8C_DEC() {
 }
-static void fs1A_DEC() {
+static void fs1A_DECW() {
 }
 static void fsBC_INC() {
 }
@@ -1125,15 +1272,33 @@ static void fs2A_OR1() {
 static void fs0A_OR1() {
     ABSOLUTE_BOOLEAN_BIT_C_MB_OP( OR1 );
 }
-
-
 #pragma endregion 
 
 #pragma region SPC_MOV
+// TODO - flags on/off
 static void MOV( uint8_t *O1, uint8_t *O2 ) {
-    // TODO
     *O1 = *O2;
 }
+
+static void MOV_FLAG( uint8_t *O1, uint8_t *O2 ) {
+    *O1 = *O2;
+    PSW = ( PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) ) 
+        | ( ( *O1 & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 )
+        | ( ( *O1 == 0 ) ? SPC_ZERO_FLAG : 0x00 );
+}
+
+static bool MOV1( bool O1, bool O2 ) {
+    return O2;
+}
+
+static void MOVW_YA_D( uint16_t *O1, uint8_t *O2 ) {
+    // TODO - make sure this is OK
+    *O1 = getWord( O2 );
+    PSW = ( PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) ) 
+        | ( ( *O1 & 0x8000 ) ? SPC_NEGATIVE_FLAG : 0x00 )
+        | ( ( *O1 == 0 ) ? SPC_ZERO_FLAG : 0x00 );
+}
+
 static void fsAF_MOV() {
     INDIRECT_AUTO_INC_X_A_OP( MOV );
 }
@@ -1147,119 +1312,129 @@ static void fsC7_MOV() {
     X_INDEXED_INDIRECT_dX_A_OP( MOV );
 }
 static void fsE8_MOV() {
-    IMMEDIATE_A_I_OP( MOV );
+    IMMEDIATE_A_I_OP( MOV_FLAG );
 }
 static void fsE6_MOV() {
-    INDIRECT_A_X_OP( MOV );
+    INDIRECT_A_X_OP( MOV_FLAG );
 }
 static void fsBF_MOV() {
-    INDIRECT_AUTO_INC_A_X_OP( MOV );
+    INDIRECT_AUTO_INC_A_X_OP( MOV_FLAG );
 }
 static void fsF7_MOV() {
-   INDIRECT_Y_INDEXED_A_dY_OP( MOV );
+   INDIRECT_Y_INDEXED_A_dY_OP( MOV_FLAG );
 }
 static void fsE7_MOV() {
-    X_INDEXED_INDIRECT_A_dX_OP( MOV );
+    X_INDEXED_INDIRECT_A_dX_OP( MOV_FLAG );
 }
 static void fs7D_MOV() {
+    IMPLIED_A_X_OP( MOV_FLAG );
 }
 static void fsDD_MOV() {
+    IMPLIED_A_Y_OP( MOV_FLAG );
 }
 static void fsE4_MOV() {
-    DIRECT_A_D_OP( MOV );
+    DIRECT_A_D_OP( MOV_FLAG );
 }
 static void fsF4_MOV() {
+    X_INDEXED_DIRECT_PAGE_A_DX_OP( MOV_FLAG );
 }
 static void fsE5_MOV() {
+    ABSOLUTE_A_a_OP( MOV_FLAG );
 }
 static void fsF5_MOV() {
+    X_INDEXED_ABSOLUTE_A_aX_OP( MOV_FLAG );
 }
 static void fsF6_MOV() {
+    Y_INDEXED_ABSOLUTE_A_aY_OP( MOV_FLAG );
 }
 static void fsBD_MOV() {
+    IMPLIED_SP_X_OP( MOV );
 }
 static void fsCD_MOV() {
-    IMMEDIATE_X_I_OP( MOV );
+    IMMEDIATE_X_I_OP( MOV_FLAG );
 }
 static void fs5D_MOV() {
+    IMPLIED_X_A_OP( MOV_FLAG );
 }
 static void fs9D_MOV() {
+    IMPLIED_X_SP_OP( MOV_FLAG );
 }
 static void fsF8_MOV() {
+    DIRECT_X_D_OP( MOV_FLAG );
 }
 static void fsF9_MOV() {
+    Y_INDEXED_DIRECT_PAGE_X_DY_OP( MOV_FLAG );
 }
 static void fsE9_MOV() {
+    ABSOLUTE_X_a_OP( MOV_FLAG );
 }
 static void fs8D_MOV() {
-    IMMEDIATE_Y_I_OP( MOV );
+    IMMEDIATE_Y_I_OP( MOV_FLAG );
 }
 static void fsFD_MOV() {
+    IMPLIED_Y_A_OP( MOV_FLAG );
 }
 static void fsEB_MOV() {
+    DIRECT_Y_D_OP( MOV_FLAG );
 }
 static void fsFB_MOV() {
+    X_INDEXED_DIRECT_PAGE_Y_DX_OP( MOV_FLAG );
 }
 static void fsEC_MOV() {
+    ABSOLUTE_Y_a_OP( MOV_FLAG );
 }
 static void fsFA_MOV() {
+    DIRECT_PAGE_DIRECT_PAGE_OP( MOV );
 }
 static void fsD4_MOV() {
+    X_INDEXED_DIRECT_PAGE_DX_A_OP( MOV );
 }
 static void fsDB_MOV() {
+    X_INDEXED_DIRECT_PAGE_DX_Y_OP( MOV );
 }
 static void fsD9_MOV() {
+    Y_INDEXED_DIRECT_PAGE_DY_X_OP( MOV );
 }
 static void fs8F_MOV() {
+    IMMEDIATE_TO_DIRECT_PAGE_OP( MOV );
 }
 static void fsC4_MOV() {
     DIRECT_D_A_OP( MOV );
 }
 static void fsD8_MOV() {
+    DIRECT_D_X_OP( MOV );
 }
 static void fsCB_MOV() {
+    DIRECT_D_Y_OP( MOV );
 }
 static void fsD5_MOV() {
+    X_INDEXED_ABSOLUTE_aX_A_OP( MOV );
 }
 static void fsD6_MOV() {
+    Y_INDEXED_ABSOLUTE_aY_A_OP( MOV );
 }
 static void fsC5_MOV() {
+    ABSOLUTE_a_A_OP( MOV );
 }
 static void fsC9_MOV() {
+    ABSOLUTE_a_X_OP( MOV );
 }
 static void fsCC_MOV() {
+    ABSOLUTE_a_Y_OP( MOV );
 }
 static void fsAA_MOV1() {
+    ABSOLUTE_BOOLEAN_BIT_C_MB_OP( MOV1 );
 }
 static void fsCA_MOV1() {
+    ABSOLUTE_BOOLEAN_BIT_MB_C_OP( MOV1 );
 }
-static void fsBA_MOV1() {
+static void fsBA_MOVW() {
+    DIRECT_YA_D_OP( MOVW_YA_D );
 }
 static void fsDA_MOVW() {
+    setWord( direct( 0 ), getYA() );
 }
 
-#pragma endregion
-
-#pragma region SPC_STACK
-static void POP( uint8_t *O1 ) {
-
-}
-static void fsAE_POP() {
-}
-static void fs8E_POP() {
-}
-static void fsCE_POP() {
-}
-static void fsEE_POP() {
-}
-static void fs2D_PUSH() {
-}
-static void fs0D_PUSH() {
-}
-static void fs4D_PUSH() {
-}
-static void fs6D_PUSH() {
-}
 #pragma endregion
 
 #pragma region SPC_SET
@@ -1272,7 +1447,7 @@ static void fs02_SET1() {
 static void fs22_SET1() {
     DIRECT_PAGE_BIT_OP( SET, 1 );
 }
-static void fs43_SET1() {
+static void fs42_SET1() {
     DIRECT_PAGE_BIT_OP( SET, 2 );
 }
 static void fs62_SET1() {
@@ -1353,21 +1528,87 @@ static void fsF1_TCALL() {
 #pragma endregion
 
 #pragma region SPC_UNCATEGORISED
-static void fs3F_CALL() {
+static void fs3F_CALL( uint8_t *O1 ) {
+    uint8_t r = ( program_counter >> 8 ) & 0x00FF;
+    PUSH( &r );
+    r = program_counter & 0x00FF;
+    PUSH( &r );
+    program_counter = getWord( O1 );
+}
+
+static void CBNE( uint8_t* O1, uint8_t *R ) {
+    if ( A == *O1 )
+        program_counter = getWord( R );
 }
 static void fsDE_CBNE() {
+    X_INDEXED_DIRECT_PAGE_DX_R_OP( CBNE );
 }
 static void fs2E_CBNE() {
+    RELATIVE_OP_D_R( CBNE );
 }
 static void fsDF_DAA() {
+    // TODO - verify these
+    if ( PSW & SPC_CARRY_FLAG || A > 0x99 ) {
+       PSW |= SPC_CARRY_FLAG;
+       A += 0x60;
+    }
+    
+    if ( PSW & SPC_HALF_CARRY_FLAG || ( A & 0x0F ) > 0x09 ) {
+       A += 0x06;
+    }
+
+    PSW = PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) 
+        | ( ( A == 0 ) ? SPC_ZERO_FLAG : 0x00 )
+        | ( ( A & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 );
+
 }
 static void fsBE_DAS() {
+    if ( !( PSW & SPC_CARRY_FLAG ) || A > 0x99 ) {
+       PSW &= ~SPC_CARRY_FLAG;
+       A -= 0x60;
+    }
+    
+    if (!( PSW & SPC_HALF_CARRY_FLAG ) || ( A & 0x0F ) > 0x09 ) {
+       A -= 0x06;
+    }
+  
+    PSW = PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) 
+        | ( ( A == 0 ) ? SPC_ZERO_FLAG : 0x00 )
+        | ( ( A & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 );
+}
+
+static void DBNZ( uint8_t *O1, uint8_t *O2 ) {
+    --*O1;
+    if ( *O1 != 0 ) {
+        program_counter += *O2;
+    }
 }
 static void fsFE_DBNZ() {
+    RELATIVE_OP_Y_R( DBNZ );
 }
 static void fs6E_DBNZ() {
+    RELATIVE_OP_D_R( DBNZ )
 }
+
 static void fs9E_DIV() {
+    // TODO
+    uint16_t YA = getYA();
+    bool overflow = ( Y >= X );
+    bool halfCarry = ( Y & 0x0F ) >= ( X & 0x0F );
+    if (Y < (X << 1)) {
+        A = YA / X;
+        Y = YA % X;
+    } else {
+        A = 255 - ( YA - ( X << 9 ) ) / ( 256 - X );
+        Y = X   + ( YA - ( X << 9 ) ) % ( 256 - X );
+    }
+
+    PSW &= ~( SPC_OVERFLOW_FLAG | SPC_HALF_CARRY_FLAG | SPC_ZERO_FLAG | SPC_NEGATIVE_FLAG );
+    PSW = PSW 
+            | ( overflow ? SPC_OVERFLOW_FLAG : 0x00 )
+            | ( halfCarry ? SPC_HALF_CARRY_FLAG : 0x00 )
+            | ( ( A == 0 ) ? SPC_ZERO_FLAG : 0x00 )
+            | ( ( A & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 );
 }
 static void fsC0_DI() {
     CLR( &PSW, SPC_INTERRUPT_FLAG );
@@ -1376,320 +1617,351 @@ static void fsA0_EI() {
     SET( &PSW, SPC_INTERRUPT_FLAG );
 }
 static void fsCF_MUL() {
+    // TODO
+    uint16_t YxA = Y * A;
+    storeYA( YxA );
+    PSW = PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) 
+            | ( ( Y == 0 ) ? SPC_ZERO_FLAG : 0x00 )
+            | ( ( Y & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 );
 }
 
 static void fs00_NOP() {
 }
 
+static bool NOT1( bool O1 ) {
+    return !O1;
+}
+
 static void fsEA_NOT1() {
+    ABSOLUTE_BOOLEAN_BIT_MB_OP( NOT1 );
 }
 static void fsED_NOTC() {
+    PSW = PSW ^ SPC_CARRY_FLAG;
 }
 
 static void fs4F_PCALL() {
+    program_counter = 0xFF00 + immediate_8();
 }
 static void fs6F_RET() {
-    program_counter = stack_pop_8();
+    uint8_t h, l;
+    POP( &l );
+    POP( &h );
+    program_counter = ( ( (uint16_t)h ) << 8 ) | (uint16_t) l;
 }
-static void fs7F_RETI() {
+static void fs7F_RET1() {
+    POP( &PSW );
+    fs6F_RET();
 }
 static void fsEF_SLEEP() {
+    // TODO
 }
+
 static void fsFF_STOP() {
+    // TODO
+    uint8_t a = 10 / 0; // Technically works
+}
+
+static uint8_t *TSETCLR_BASE() {
+    uint8_t *a = absolute( 0 );
+    uint8_t temp = *a & A;
+    PSW = ( PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) ) 
+        | ( temp & 0x80 ? SPC_NEGATIVE_FLAG : 0x00 )
+        | ( temp == 0 ? SPC_ZERO_FLAG : 0x00 );
+    
+    return a;
 }
 
 static void fs4E_TCLR1() {
-    uint8_t *a = absolute( 0 );
-    uint16_t a_8 = *a;
-    a_8 = a_8 & (~A);
-    *a = a_8;
-    uint8_t res = A - a_8;
-    spc_set_PSW_register(res, SPC_ZERO_FLAG | SPC_NEGATIVE_FLAG);
-    program_counter += 3;
+    uint8_t *a = TSETCLR_BASE();
+    *a &= ~A;
 }
 static void fs0E_TSET1() {
-    uint8_t *a = absolute( 0 );
-    uint16_t a_8 = *a;
-    a_8 = (a_8 | A);
-    *a = a_8;
-    uint8_t res = A - a_8;
-    spc_set_PSW_register(res, SPC_ZERO_FLAG | SPC_NEGATIVE_FLAG);
-    program_counter += 3;
+    uint8_t *a = TSETCLR_BASE();
+    *a |= A;
 }
 static void fs9F_XCN() {
-    A = (A >> 4) | (A << 4);
-    program_counter += 1;
+    A = ( A >> 4 ) | ( A << 4 );
+    PSW = ( PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) ) 
+        | ( A & 0x80 ? SPC_NEGATIVE_FLAG : 0x00 )
+        | ( A == 0 ? SPC_ZERO_FLAG : 0x00 );
 }
 
 #pragma endregion
 /* Populate the instruction functions array */
+
 void spc700_populate_instructions() {
-    spc700_instructions[0x00] = fs00_NOP;
-    spc700_instructions[0x01] = fs01_TCALL;
-    spc700_instructions[0x02] = fs02_SET1;
-    spc700_instructions[0x03] = fs03_BBS;
-    spc700_instructions[0x04] = fs04_OR;
-    spc700_instructions[0x05] = fs05_OR;
-    spc700_instructions[0x06] = fs06_OR;
-    spc700_instructions[0x07] = fs07_OR;
-    spc700_instructions[0x08] = fs08_OR;
-    spc700_instructions[0x09] = fs09_OR;
-    spc700_instructions[0x0A] = fs0A_OR1;
-    spc700_instructions[0x0B] = fs0B_ASL;
-    spc700_instructions[0x0C] = fs0C_ASL;
-    spc700_instructions[0x0D] = fs0D_PUSH;
-    spc700_instructions[0x0E] = fs0E_TSET1;
-    spc700_instructions[0x0F] = fs0F_BRK;
-    spc700_instructions[0x10] = fs10_BPL;
 
-    spc700_instructions[0x11] = fs11_TCALL;
-    spc700_instructions[0x12] = fs12_CLRB;
-    spc700_instructions[0x13] = fs13_BBC;
-    spc700_instructions[0x14] = fs14_OR;
-    spc700_instructions[0x15] = fs15_OR;
-    spc700_instructions[0x16] = fs16_OR;
-    spc700_instructions[0x17] = fs17_OR;
-    spc700_instructions[0x18] = fs18_OR;
-    spc700_instructions[0x19] = fs19_OR;
-    spc700_instructions[0x1A] = fs1A_DEC;
-    spc700_instructions[0x1B] = fs1B_ASL;
-    spc700_instructions[0x1C] = fs1C_ASL;
-    spc700_instructions[0x1D] = fs1D_DEC;
-    spc700_instructions[0x1E] = fs1E_CMP;
-    spc700_instructions[0x1F] = fs1F_JMP;
+    instructions[0x00] = (SPC700InstructionEntry) { fs00_NOP, 1, 2 };	// ........ :  : do nothing
+    instructions[0x01] = (SPC700InstructionEntry) { fs01_TCALL, 1, 8 };	// ........ : 0        : CALL [$FFDE]
+    instructions[0x02] = (SPC700InstructionEntry) { fs02_SET1, 2, 4 };	// ........ : d.0      : d.0 = 1
+    instructions[0x03] = (SPC700InstructionEntry) { fs03_BBS, 3, 5 };	// ........ : d.0, r   : PC+=r  if d.0 == 1
+    instructions[0x04] = (SPC700InstructionEntry) { fs04_OR, 2, 3 };	// N.....Z. : A, d     : A = A | (d)
+    instructions[0x05] = (SPC700InstructionEntry) { fs05_OR, 3, 4 };	// N.....Z. : A, !a    : A = A | (a)
+    instructions[0x06] = (SPC700InstructionEntry) { fs06_OR, 1, 3 };	// N.....Z. : A, (X)   : A = A | (X)
+    instructions[0x07] = (SPC700InstructionEntry) { fs07_OR, 2, 6 };	// N.....Z. : A, [d+X] : A = A | ([d+X])
+    instructions[0x08] = (SPC700InstructionEntry) { fs08_OR, 2, 2 };	// N.....Z. : A, #i    : A = A | i
+    instructions[0x09] = (SPC700InstructionEntry) { fs09_OR, 3, 6 };	// N.....Z. : dd, ds   : (dd) = (dd) | (ds)
+    instructions[0x0A] = (SPC700InstructionEntry) { fs0A_OR1, 3, 5 };	// .......C : C, m.b   : C = C | (m.b)
+    instructions[0x0B] = (SPC700InstructionEntry) { fs0B_ASL, 2, 4 };	// N.....ZC : d        : Left shift (d) as above
+    instructions[0x0C] = (SPC700InstructionEntry) { fs0C_ASL, 3, 5 };	// N.....ZC : !a       : Left shift (a) as above
+    instructions[0x0D] = (SPC700InstructionEntry) { fs0D_PUSH, 1, 4 };	// ........ : PSW      : (SP--) = Flags
+    instructions[0x0E] = (SPC700InstructionEntry) { fs0E_TSET1, 3, 6 };	// N.....Z. : !a       : (a) = (a)|A, ZN as for A-(a)
+    instructions[0x0F] = (SPC700InstructionEntry) { fs0F_BRK, 1, 8 };	// ...1.0.. :  : Push PC and Flags, PC = [$FFDE]
 
-    spc700_instructions[0x21] = fs21_TCALL;
-    spc700_instructions[0x22] = fs22_SET1;
-    spc700_instructions[0x23] = fs23_BBS;
-    spc700_instructions[0x24] = fs24_AND;
-    spc700_instructions[0x25] = fs25_AND;
-    spc700_instructions[0x26] = fs26_AND;
-    spc700_instructions[0x27] = fs27_AND;
-    spc700_instructions[0x28] = fs28_AND;
-    spc700_instructions[0x29] = fs29_AND;
-    spc700_instructions[0x2A] = fs2A_OR1;
-    spc700_instructions[0x2B] = fs2B_ROL;
-    spc700_instructions[0x2C] = fs2C_ROL;
-    spc700_instructions[0x2D] = fs2D_PUSH;
-    spc700_instructions[0x2E] = fs2E_CBNE;
-    spc700_instructions[0x2F] = fs2F_BRA;
-    spc700_instructions[0x30] = fs30_BMI;
+    instructions[0x10] = (SPC700InstructionEntry) { fs10_BPL, 2, 2 };	// ........ : r        : PC+=r  if N == 0
+    instructions[0x11] = (SPC700InstructionEntry) { fs11_TCALL, 1, 8 };	// ........ : 1        : CALL [$FFDC]
+    instructions[0x12] = (SPC700InstructionEntry) { fs12_CLR1, 2, 4 };	// ........ : d.0      : d.0 = 0
+    instructions[0x13] = (SPC700InstructionEntry) { fs13_BBC, 3, 5 };	// ........ : d.0, r   : PC+=r  if d.0 == 0
+    instructions[0x14] = (SPC700InstructionEntry) { fs14_OR, 2, 4 };	// N.....Z. : A, d+X   : A = A | (d+X)
+    instructions[0x15] = (SPC700InstructionEntry) { fs15_OR, 3, 5 };	// N.....Z. : A, !a+X  : A = A | (a+X)
+    instructions[0x16] = (SPC700InstructionEntry) { fs16_OR, 3, 5 };	// N.....Z. : A, !a+Y  : A = A | (a+Y)
+    instructions[0x17] = (SPC700InstructionEntry) { fs17_OR, 2, 6 };	// N.....Z. : A, [d]+Y : A = A | ([d]+Y)
+    instructions[0x18] = (SPC700InstructionEntry) { fs18_OR, 3, 5 };	// N.....Z. : d, #i    : (d) = (d) | i
+    instructions[0x19] = (SPC700InstructionEntry) { fs19_OR, 1, 5 };	// N.....Z. : (X), (Y) : (X) = (X) | (Y)
+    instructions[0x1A] = (SPC700InstructionEntry) { fs1A_DECW, 2, 6 };	// N.....Z. : d        : Word (d)--
+    instructions[0x1B] = (SPC700InstructionEntry) { fs1B_ASL, 2, 5 };	// N.....ZC : d+X      : Left shift (d+X) as above
+    instructions[0x1C] = (SPC700InstructionEntry) { fs1C_ASL, 1, 2 };	// N.....ZC : A        : Left shift A: high->C, 0->low
+    instructions[0x1D] = (SPC700InstructionEntry) { fs1D_DEC, 1, 2 };	// N.....Z. : X        : X--
+    instructions[0x1E] = (SPC700InstructionEntry) { fs1E_CMP, 3, 4 };	// N.....ZC : X, !a    : X - (a)
+    instructions[0x1F] = (SPC700InstructionEntry) { fs1F_JMP, 3, 6 };	// ........ : [!a+X]   : PC = [a+X]
 
-    spc700_instructions[0x31] = fs31_TCALL;
-    spc700_instructions[0x32] = fs32_CLR1;
-    spc700_instructions[0x33] = fs33_BBC;
-    spc700_instructions[0x34] = fs34_AND;
-    spc700_instructions[0x35] = fs35_AND;
-    spc700_instructions[0x36] = fs36_AND;
-    spc700_instructions[0x37] = fs37_AND;
-    spc700_instructions[0x38] = fs38_AND;
-    spc700_instructions[0x39] = fs39_AND;
-    spc700_instructions[0x3A] = fs3A_INCW;
-    spc700_instructions[0x3B] = fs3B_ROL;
-    spc700_instructions[0x3C] = fs3C_ROL;
-    spc700_instructions[0x3D] = fs3D_INC;
-    spc700_instructions[0x3E] = fs3E_CMP;
-    spc700_instructions[0x3F] = fs3F_CALL;
-    spc700_instructions[0x40] = fs40_SETP;
+    instructions[0x20] = (SPC700InstructionEntry) { fs20_CLRP, 1, 2 };	// ..0..... :  : P = 0
+    instructions[0x21] = (SPC700InstructionEntry) { fs21_TCALL, 1, 8 };	// ........ : 2        : CALL [$FFDA]
+    instructions[0x22] = (SPC700InstructionEntry) { fs22_SET1, 2, 4 };	// ........ : d.1      : d.1 = 1
+    instructions[0x23] = (SPC700InstructionEntry) { fs23_BBS, 3, 5 };	// ........ : d.1, r   : PC+=r  if d.1 == 1
+    instructions[0x24] = (SPC700InstructionEntry) { fs24_AND, 2, 3 };	// N.....Z. : A, d     : A = A & (d)
+    instructions[0x25] = (SPC700InstructionEntry) { fs25_AND, 3, 4 };	// N.....Z. : A, !a    : A = A & (a)
+    instructions[0x26] = (SPC700InstructionEntry) { fs26_AND, 1, 3 };	// N.....Z. : A, (X)   : A = A & (X)
+    instructions[0x27] = (SPC700InstructionEntry) { fs27_AND, 2, 6 };	// N.....Z. : A, [d+X] : A = A & ([d+X])
+    instructions[0x28] = (SPC700InstructionEntry) { fs28_AND, 2, 2 };	// N.....Z. : A, #i    : A = A & i
+    instructions[0x29] = (SPC700InstructionEntry) { fs29_AND, 3, 6 };	// N.....Z. : dd, ds   : (dd) = (dd) & (ds)
+    instructions[0x2A] = (SPC700InstructionEntry) { fs2A_OR1, 3, 5 };	// .......C : C, /m.b  : C = C | ~(m.b)
+    instructions[0x2B] = (SPC700InstructionEntry) { fs2B_ROL, 2, 4 };	// N.....ZC : d        : Left shift (d) as above
+    instructions[0x2C] = (SPC700InstructionEntry) { fs2C_ROL, 3, 5 };	// N.....ZC : !a       : Left shift (a) as above
+    instructions[0x2D] = (SPC700InstructionEntry) { fs2D_PUSH, 1, 4 };	// ........ : A        : (SP--) = A
+    instructions[0x2E] = (SPC700InstructionEntry) { fs2E_CBNE, 3, 5 };	// ........ : d, r     : CMP A, (d) then BNE
+    instructions[0x2F] = (SPC700InstructionEntry) { fs2F_BRA, 2, 4 };	// ........ : r        : PC+=r
 
-    spc700_instructions[0x41] = fs41_TCALL;
-    spc700_instructions[0x43] = fs43_SET1;
-    spc700_instructions[0x44] = fs44_EOR;
-    spc700_instructions[0x45] = fs45_EOR;
-    spc700_instructions[0x46] = fs46_EOR;
-    spc700_instructions[0x47] = fs47_EOR;
-    spc700_instructions[0x48] = fs48_EOR;
-    spc700_instructions[0x49] = fs49_EOR;
-    spc700_instructions[0x4A] = fs4A_AND1;
-    spc700_instructions[0x4B] = fs4B_LSR;
-    spc700_instructions[0x4C] = fs4C_LSR;
-    spc700_instructions[0x4D] = fs4D_PUSH;
-    spc700_instructions[0x4E] = fs4E_TCLR1;
-    spc700_instructions[0x4F] = fs4F_PCALL;
-    spc700_instructions[0x50] = fs50_BVC;
+    instructions[0x30] = (SPC700InstructionEntry) { fs30_BMI, 2, 2 };	// ........ : r        : PC+=r  if N == 1
+    instructions[0x31] = (SPC700InstructionEntry) { fs31_TCALL, 1, 8 };	// ........ : 3        : CALL [$FFD8]
+    instructions[0x32] = (SPC700InstructionEntry) { fs32_CLR1, 2, 4 };	// ........ : d.1      : d.1 = 0
+    instructions[0x33] = (SPC700InstructionEntry) { fs33_BBC, 3, 5 };	// ........ : d.1, r   : PC+=r  if d.1 == 0
+    instructions[0x34] = (SPC700InstructionEntry) { fs34_AND, 2, 4 };	// N.....Z. : A, d+X   : A = A & (d+X)
+    instructions[0x35] = (SPC700InstructionEntry) { fs35_AND, 3, 5 };	// N.....Z. : A, !a+X  : A = A & (a+X)
+    instructions[0x36] = (SPC700InstructionEntry) { fs36_AND, 3, 5 };	// N.....Z. : A, !a+Y  : A = A & (a+Y)
+    instructions[0x37] = (SPC700InstructionEntry) { fs37_AND, 2, 6 };	// N.....Z. : A, [d]+Y : A = A & ([d]+Y)
+    instructions[0x38] = (SPC700InstructionEntry) { fs38_AND, 3, 5 };	// N.....Z. : d, #i    : (d) = (d) & i
+    instructions[0x39] = (SPC700InstructionEntry) { fs39_AND, 1, 5 };	// N.....Z. : (X), (Y) : (X) = (X) & (Y)
+    instructions[0x3A] = (SPC700InstructionEntry) { fs3A_INCW, 2, 6 };	// N.....Z. : d        : Word (d)++
+    instructions[0x3B] = (SPC700InstructionEntry) { fs3B_ROL, 2, 5 };	// N.....ZC : d+X      : Left shift (d+X) as above
+    instructions[0x3C] = (SPC700InstructionEntry) { fs3C_ROL, 1, 2 };	// N.....ZC : A        : Left shift A: low=C, C=high
+    instructions[0x3D] = (SPC700InstructionEntry) { fs3D_INC, 1, 2 };	// N.....Z. : X        : X++
+    instructions[0x3E] = (SPC700InstructionEntry) { fs3E_CMP, 2, 3 };	// N.....ZC : X, d     : X - (d)
+    instructions[0x3F] = (SPC700InstructionEntry) { fs3F_CALL, 3, 8 };	// ........ : !a       : (SP--)=PCh, (SP--)=PCl, PC=a
 
-    spc700_instructions[0x51] = fs51_TCALL;
-    spc700_instructions[0x52] = fs52_CLR1;
-    spc700_instructions[0x53] = fs53_BBC;
-    spc700_instructions[0x54] = fs54_EOR;
-    spc700_instructions[0x55] = fs55_EOR;
-    spc700_instructions[0x56] = fs56_EOR;
-    spc700_instructions[0x57] = fs57_EOR;
-    spc700_instructions[0x58] = fs58_EOR;
-    spc700_instructions[0x59] = fs59_EOR;
-    spc700_instructions[0x5A] = fs5A_CMPW;
-    spc700_instructions[0x5C] = fs5C_LSR;
-    spc700_instructions[0x5D] = fs5D_MOV;
-    spc700_instructions[0x5E] = fs5E_CMP;
-    spc700_instructions[0x5F] = fs5F_JMP;
+    instructions[0x40] = (SPC700InstructionEntry) { fs40_SETP, 1, 2 };	// ..1..... :  : P = 1
+    instructions[0x41] = (SPC700InstructionEntry) { fs41_TCALL, 1, 8 };	// ........ : 4        : CALL [$FFD6]
+    instructions[0x42] = (SPC700InstructionEntry) { fs42_SET1, 2, 4 };	// ........ : d.2      : d.2 = 1
+    instructions[0x43] = (SPC700InstructionEntry) { fs43_BBS, 3, 5 };	// ........ : d.2, r   : PC+=r  if d.2 == 1
+    instructions[0x44] = (SPC700InstructionEntry) { fs44_EOR, 2, 3 };	// N.....Z. : A, d     : A = A EOR (d)
+    instructions[0x45] = (SPC700InstructionEntry) { fs45_EOR, 3, 4 };	// N.....Z. : A, !a    : A = A EOR (a)
+    instructions[0x46] = (SPC700InstructionEntry) { fs46_EOR, 1, 3 };	// N.....Z. : A, (X)   : A = A EOR (X)
+    instructions[0x47] = (SPC700InstructionEntry) { fs47_EOR, 2, 6 };	// N.....Z. : A, [d+X] : A = A EOR ([d+X])
+    instructions[0x48] = (SPC700InstructionEntry) { fs48_EOR, 2, 2 };	// N.....Z. : A, #i    : A = A EOR i
+    instructions[0x49] = (SPC700InstructionEntry) { fs49_EOR, 3, 6 };	// N.....Z. : dd, ds   : (dd) = (dd) EOR (ds)
+    instructions[0x4A] = (SPC700InstructionEntry) { fs4A_AND1, 3, 4 };	// .......C : C, m.b   : C = C & (m.b)
+    instructions[0x4B] = (SPC700InstructionEntry) { fs4B_LSR, 2, 4 };	// N.....ZC : d        : Right shift (d) as above
+    instructions[0x4C] = (SPC700InstructionEntry) { fs4C_LSR, 3, 5 };	// N.....ZC : !a       : Right shift (a) as above
+    instructions[0x4D] = (SPC700InstructionEntry) { fs4D_PUSH, 1, 4 };	// ........ : X        : (SP--) = X
+    instructions[0x4E] = (SPC700InstructionEntry) { fs4E_TCLR1, 3, 6 };	// N.....Z. : !a       : (a) = (a)&~A, ZN as for A-(a)
+    instructions[0x4F] = (SPC700InstructionEntry) { fs4F_PCALL, 2, 6 };	// ........ : u        : CALL $FF00+u
 
-    spc700_instructions[0x61] = fs61_TCALL;
-    spc700_instructions[0x62] = fs62_SET1;
-    spc700_instructions[0x63] = fs63_BBS;
-    spc700_instructions[0x64] = fs64_CMP;
-    spc700_instructions[0x65] = fs65_CMP;
-    spc700_instructions[0x66] = fs66_CMP;
-    spc700_instructions[0x67] = fs67_CMP;
-    spc700_instructions[0x68] = fs68_CMP;
-    spc700_instructions[0x69] = fs69_CMP;
-    spc700_instructions[0x6A] = fs6A_AND1;
-    spc700_instructions[0x6B] = fs6B_ROR;
-    spc700_instructions[0x6C] = fs6C_ROR;
-    spc700_instructions[0x6D] = fs6D_PUSH;
-    spc700_instructions[0x6E] = fs6E_DBNZ;
-    spc700_instructions[0x6F] = fs6F_RET;
-    spc700_instructions[0x70] = fs70_BVS;
+    instructions[0x50] = (SPC700InstructionEntry) { fs50_BVC, 2, 2 };	// ........ : r        : PC+=r  if V == 0
+    instructions[0x51] = (SPC700InstructionEntry) { fs51_TCALL, 1, 8 };	// ........ : 5        : CALL [$FFD4]
+    instructions[0x52] = (SPC700InstructionEntry) { fs52_CLR1, 2, 4 };	// ........ : d.2      : d.2 = 0
+    instructions[0x53] = (SPC700InstructionEntry) { fs53_BBC, 3, 5 };	// ........ : d.2, r   : PC+=r  if d.2 == 0
+    instructions[0x54] = (SPC700InstructionEntry) { fs54_EOR, 2, 4 };	// N.....Z. : A, d+X   : A = A EOR (d+X)
+    instructions[0x55] = (SPC700InstructionEntry) { fs55_EOR, 3, 5 };	// N.....Z. : A, !a+X  : A = A EOR (a+X)
+    instructions[0x56] = (SPC700InstructionEntry) { fs56_EOR, 3, 5 };	// N.....Z. : A, !a+Y  : A = A EOR (a+Y)
+    instructions[0x57] = (SPC700InstructionEntry) { fs57_EOR, 2, 6 };	// N.....Z. : A, [d]+Y : A = A EOR ([d]+Y)
+    instructions[0x58] = (SPC700InstructionEntry) { fs58_EOR, 3, 5 };	// N.....Z. : d, #i    : (d) = (d) EOR i
+    instructions[0x59] = (SPC700InstructionEntry) { fs59_EOR, 1, 5 };	// N.....Z. : (X), (Y) : (X) = (X) EOR (Y)
+    instructions[0x5A] = (SPC700InstructionEntry) { fs5A_CMPW, 2, 4 };	// N.....ZC : YA, d    : YA - (d)
+    instructions[0x5B] = (SPC700InstructionEntry) { fs5B_LSR, 2, 5 };	// N.....ZC : d+X      : Right shift (d+X) as above
+    instructions[0x5C] = (SPC700InstructionEntry) { fs5C_LSR, 1, 2 };	// N.....ZC : A        : Right shift A: 0->high, low->C
+    instructions[0x5D] = (SPC700InstructionEntry) { fs5D_MOV, 1, 2 };	// N.....Z. : X, A     : X = A
+    instructions[0x5E] = (SPC700InstructionEntry) { fs5E_CMP, 3, 4 };	// N.....ZC : Y, !a    : Y - (a)
+    instructions[0x5F] = (SPC700InstructionEntry) { fs5F_JMP, 3, 3 };	// ........ : !a       : PC = a
 
-    spc700_instructions[0x71] = fs71_TCALL;
-    spc700_instructions[0x72] = fs72_CLR1;
-    spc700_instructions[0x73] = fs73_BBC;
-    spc700_instructions[0x74] = fs74_CMP;
-    spc700_instructions[0x75] = fs75_CMP;
-    spc700_instructions[0x76] = fs76_CMP;
-    spc700_instructions[0x77] = fs77_CMP;
-    spc700_instructions[0x78] = fs78_CMP;
-    spc700_instructions[0x79] = fs79_CMP;
-    spc700_instructions[0x7A] = fs7A_ADDW;
-    spc700_instructions[0x7B] = fs7B_ROR;
-    spc700_instructions[0x7C] = fs7C_ROR;
-    spc700_instructions[0x7D] = fs7D_MOV;
-    spc700_instructions[0x7E] = fs7E_CMP;
-    spc700_instructions[0x7F] = fs7F_RETI;
-    spc700_instructions[0x80] = fs80_SETC;
+    instructions[0x60] = (SPC700InstructionEntry) { fs60_CLRC, 1, 2 };	// .......0 :  : C = 0
+    instructions[0x61] = (SPC700InstructionEntry) { fs61_TCALL, 1, 8 };	// ........ : 6        : CALL [$FFD2]
+    instructions[0x62] = (SPC700InstructionEntry) { fs62_SET1, 2, 4 };	// ........ : d.3      : d.3 = 1
+    instructions[0x63] = (SPC700InstructionEntry) { fs63_BBS, 3, 5 };	// ........ : d.3, r   : PC+=r  if d.3 == 1
+    instructions[0x64] = (SPC700InstructionEntry) { fs64_CMP, 2, 3 };	// N.....ZC : A, d     : A - (d)
+    instructions[0x65] = (SPC700InstructionEntry) { fs65_CMP, 3, 4 };	// N.....ZC : A, !a    : A - (a)
+    instructions[0x66] = (SPC700InstructionEntry) { fs66_CMP, 1, 3 };	// N.....ZC : A, (X)   : A - (X)
+    instructions[0x67] = (SPC700InstructionEntry) { fs67_CMP, 2, 6 };	// N.....ZC : A, [d+X] : A - ([d+X])
+    instructions[0x68] = (SPC700InstructionEntry) { fs68_CMP, 2, 2 };	// N.....ZC : A, #i    : A - i
+    instructions[0x69] = (SPC700InstructionEntry) { fs69_CMP, 3, 6 };	// N.....ZC : dd, ds   : (dd) - (ds)
+    instructions[0x6A] = (SPC700InstructionEntry) { fs6A_AND1, 3, 4 };	// .......C : C, /m.b  : C = C & ~(m.b)
+    instructions[0x6B] = (SPC700InstructionEntry) { fs6B_ROR, 2, 4 };	// N.....ZC : d        : Right shift (d) as above
+    instructions[0x6C] = (SPC700InstructionEntry) { fs6C_ROR, 3, 5 };	// N.....ZC : !a       : Right shift (a) as above
+    instructions[0x6D] = (SPC700InstructionEntry) { fs6D_PUSH, 1, 4 };	// ........ : Y        : (SP--) = Y
+    instructions[0x6E] = (SPC700InstructionEntry) { fs6E_DBNZ, 3, 5 };	// ........ : d, r     : (d)-- then JNZ
+    instructions[0x6F] = (SPC700InstructionEntry) { fs6F_RET, 1, 5 };	// ........ :  : Pop PC
 
-    spc700_instructions[0x81] = fs81_TCALL;
-    spc700_instructions[0x82] = fs82_SET1;
-    spc700_instructions[0x83] = fs83_BBS;
-    spc700_instructions[0x84] = fs84_ADC;
-    spc700_instructions[0x85] = fs85_ADC;
-    spc700_instructions[0x86] = fs86_ADC;
-    spc700_instructions[0x87] = fs87_ADC;
-    spc700_instructions[0x88] = fs88_ADC;
-    spc700_instructions[0x89] = fs89_ADC;
-    spc700_instructions[0x8A] = fs8A_EOR1;
-    spc700_instructions[0x8B] = fs8B_DEC;
-    spc700_instructions[0x8C] = fs8C_DEC;
-    spc700_instructions[0x8D] = fs8D_MOV;
-    spc700_instructions[0x8E] = fs8E_POP;
-    spc700_instructions[0x8F] = fs8F_MOV;
-    spc700_instructions[0x90] = fs90_BCC;
-    spc700_instructions[0x90] = fs91_TCALL;
+    instructions[0x70] = (SPC700InstructionEntry) { fs70_BVS, 2, 2 };	// ........ : r        : PC+=r  if V == 1
+    instructions[0x71] = (SPC700InstructionEntry) { fs71_TCALL, 1, 8 };	// ........ : 7        : CALL [$FFD0]
+    instructions[0x72] = (SPC700InstructionEntry) { fs72_CLR1, 2, 4 };	// ........ : d.3      : d.3 = 0
+    instructions[0x73] = (SPC700InstructionEntry) { fs73_BBC, 3, 5 };	// ........ : d.3, r   : PC+=r  if d.3 == 0
+    instructions[0x74] = (SPC700InstructionEntry) { fs74_CMP, 2, 4 };	// N.....ZC : A, d+X   : A - (d+X)
+    instructions[0x75] = (SPC700InstructionEntry) { fs75_CMP, 3, 5 };	// N.....ZC : A, !a+X  : A - (a+X)
+    instructions[0x76] = (SPC700InstructionEntry) { fs76_CMP, 3, 5 };	// N.....ZC : A, !a+Y  : A - (a+Y)
+    instructions[0x77] = (SPC700InstructionEntry) { fs77_CMP, 2, 6 };	// N.....ZC : A, [d]+Y : A - ([d]+Y)
+    instructions[0x78] = (SPC700InstructionEntry) { fs78_CMP, 3, 5 };	// N.....ZC : d, #i    : (d) - i
+    instructions[0x79] = (SPC700InstructionEntry) { fs79_CMP, 1, 5 };	// N.....ZC : (X), (Y) : (X) - (Y)
+    instructions[0x7A] = (SPC700InstructionEntry) { fs7A_ADDW, 2, 5 };	// NV..H.ZC : YA, d    : YA  = YA + (d), H on high byte
+    instructions[0x7B] = (SPC700InstructionEntry) { fs7B_ROR, 2, 5 };	// N.....ZC : d+X      : Right shift (d+X) as above
+    instructions[0x7C] = (SPC700InstructionEntry) { fs7C_ROR, 1, 2 };	// N.....ZC : A        : Right shift A: high=C, C=low
+    instructions[0x7D] = (SPC700InstructionEntry) { fs7D_MOV, 1, 2 };	// N.....Z. : A, X     : A = X
+    instructions[0x7E] = (SPC700InstructionEntry) { fs7E_CMP, 2, 3 };	// N.....ZC : Y, d     : Y - (d)
+    instructions[0x7F] = (SPC700InstructionEntry) { fs7F_RET1, 1, 6 };	// NVPBHIZC :  : Pop Flags, PC
 
-    spc700_instructions[0x92] = fs92_CLR1;
-    spc700_instructions[0x93] = fs93_BBC;
-    spc700_instructions[0x94] = fs94_ADC;
-    spc700_instructions[0x95] = fs95_ADC;
-    spc700_instructions[0x96] = fs96_ADC;
-    spc700_instructions[0x97] = fs97_ADC;
-    spc700_instructions[0x98] = fs98_ADC;
-    spc700_instructions[0x99] = fs99_ADC;
-    spc700_instructions[0x9A] = fs9A_SUBW;
-    spc700_instructions[0x9B] = fs9B_DEC;
-    spc700_instructions[0x9C] = fs9C_DEC;
-    spc700_instructions[0x9D] = fs9D_MOV;
-    spc700_instructions[0x9E] = fs9E_DIV;
-    spc700_instructions[0x9F] = fs9F_XCN;
-    spc700_instructions[0xA0] = fsA0_EI;
+    instructions[0x80] = (SPC700InstructionEntry) { fs80_SETC, 1, 2 };	// .......1 :  : C = 1
+    instructions[0x81] = (SPC700InstructionEntry) { fs81_TCALL, 1, 8 };	// ........ : 8        : CALL [$FFCE]
+    instructions[0x82] = (SPC700InstructionEntry) { fs82_SET1, 2, 4 };	// ........ : d.4      : d.4 = 1
+    instructions[0x83] = (SPC700InstructionEntry) { fs83_BBS, 3, 5 };	// ........ : d.4, r   : PC+=r  if d.4 == 1
+    instructions[0x84] = (SPC700InstructionEntry) { fs84_ADC, 2, 3 };	// NV..H.ZC : A, d     : A = A+(d)+C
+    instructions[0x85] = (SPC700InstructionEntry) { fs85_ADC, 3, 4 };	// NV..H.ZC : A, !a    : A = A+(a)+C
+    instructions[0x86] = (SPC700InstructionEntry) { fs86_ADC, 1, 3 };	// NV..H.ZC : A, (X)   : A = A+(X)+C
+    instructions[0x87] = (SPC700InstructionEntry) { fs87_ADC, 2, 6 };	// NV..H.ZC : A, [d+X] : A = A+([d+X])+C
+    instructions[0x88] = (SPC700InstructionEntry) { fs88_ADC, 2, 2 };	// NV..H.ZC : A, #i    : A = A+i+C
+    instructions[0x89] = (SPC700InstructionEntry) { fs89_ADC, 3, 6 };	// NV..H.ZC : dd, ds   : (dd) = (dd)+(d)+C
+    instructions[0x8A] = (SPC700InstructionEntry) { fs8A_EOR1, 3, 5 };	// .......C : C, m.b   : C = C EOR (m.b)
+    instructions[0x8B] = (SPC700InstructionEntry) { fs8B_DEC, 2, 4 };	// N.....Z. : d        : (d)--
+    instructions[0x8C] = (SPC700InstructionEntry) { fs8C_DEC, 3, 5 };	// N.....Z. : !a       : (a)--
+    instructions[0x8D] = (SPC700InstructionEntry) { fs8D_MOV, 2, 2 };	// N.....Z. : Y, #i    : Y = i
+    instructions[0x8E] = (SPC700InstructionEntry) { fs8E_POP, 1, 4 };	// NVPBHIZC : PSW      : Flags = (++SP)
+    instructions[0x8F] = (SPC700InstructionEntry) { fs8F_MOV, 3, 5 };	// ........ : d, #i    : (d) = i        (read)
 
-    spc700_instructions[0xA1] = fsA1_TCALL;
-    spc700_instructions[0xA2] = fsA2_SET1;
-    spc700_instructions[0xA3] = fsA3_BBS;
-    spc700_instructions[0xA4] = fsA4_SBC;
-    spc700_instructions[0xA5] = fsA5_SBC;
-    spc700_instructions[0xA6] = fsA6_SBC;
-    spc700_instructions[0xA7] = fsA7_SBC;
-    spc700_instructions[0xA8] = fsA8_SBC;
-    spc700_instructions[0xA9] = fsA9_SBC;
-    spc700_instructions[0xAA] = fsAA_MOV1;
-    spc700_instructions[0xAB] = fsAB_INC;
-    spc700_instructions[0xAC] = fsAC_INC;
-    spc700_instructions[0xAD] = fsAD_CMP;
-    spc700_instructions[0xAE] = fsAE_POP;
-    spc700_instructions[0xAF] = fsAF_MOV;
-    spc700_instructions[0xB0] = fsB0_BCS;
+    instructions[0x90] = (SPC700InstructionEntry) { fs90_BCC, 2, 2 };	// ........ : r        : PC+=r  if C == 0
+    instructions[0x91] = (SPC700InstructionEntry) { fs91_TCALL, 1, 8 };	// ........ : 9        : CALL [$FFCC]
+    instructions[0x92] = (SPC700InstructionEntry) { fs92_CLR1, 2, 4 };	// ........ : d.4      : d.4 = 0
+    instructions[0x93] = (SPC700InstructionEntry) { fs93_BBC, 3, 5 };	// ........ : d.4, r   : PC+=r  if d.4 == 0
+    instructions[0x94] = (SPC700InstructionEntry) { fs94_ADC, 2, 4 };	// NV..H.ZC : A, d+X   : A = A+(d+X)+C
+    instructions[0x95] = (SPC700InstructionEntry) { fs95_ADC, 3, 5 };	// NV..H.ZC : A, !a+X  : A = A+(a+X)+C
+    instructions[0x96] = (SPC700InstructionEntry) { fs96_ADC, 3, 5 };	// NV..H.ZC : A, !a+Y  : A = A+(a+Y)+C
+    instructions[0x97] = (SPC700InstructionEntry) { fs97_ADC, 2, 6 };	// NV..H.ZC : A, [d]+Y : A = A+([d]+Y)+C
+    instructions[0x98] = (SPC700InstructionEntry) { fs98_ADC, 3, 5 };	// NV..H.ZC : d, #i    : (d) = (d)+i+C
+    instructions[0x99] = (SPC700InstructionEntry) { fs99_ADC, 1, 5 };	// NV..H.ZC : (X), (Y) : (X) = (X)+(Y)+C
+    instructions[0x9A] = (SPC700InstructionEntry) { fs9A_SUBW, 2, 5 };	// NV..H.ZC : YA, d    : YA  = YA - (d), H on high byte
+    instructions[0x9B] = (SPC700InstructionEntry) { fs9B_DEC, 2, 5 };	// N.....Z. : d+X      : (d+X)--
+    instructions[0x9C] = (SPC700InstructionEntry) { fs9C_DEC, 1, 2 };	// N.....Z. : A        : A--
+    instructions[0x9D] = (SPC700InstructionEntry) { fs9D_MOV, 1, 2 };	// N.....Z. : X, SP    : X = SP
+    instructions[0x9E] = (SPC700InstructionEntry) { fs9E_DIV, 1, 1 };	// NV..H.Z. : YA, X    : A=YA/X, Y=mod(YA,X)
+    instructions[0x9F] = (SPC700InstructionEntry) { fs9F_XCN, 1, 5 };	// N.....Z. : A        : A = (A>>4) | (A<<4)
 
-    spc700_instructions[0xB1] = fsB1_TCALL;
-    spc700_instructions[0xB2] = fsB2_CLR1;
-    spc700_instructions[0xB3] = fsB3_BBC;
-    spc700_instructions[0xB4] = fsB4_SBC;
-    spc700_instructions[0xB5] = fsB5_SBC;
-    spc700_instructions[0xB6] = fsB6_SBC;
-    spc700_instructions[0xB7] = fsB7_SBC;
-    spc700_instructions[0xB8] = fsB8_SBC;
-    spc700_instructions[0xB9] = fsB9_SBC;
-    spc700_instructions[0xBA] = fsBA_MOV1;
-    spc700_instructions[0xBB] = fsBB_INC;
-    spc700_instructions[0xBC] = fsBC_INC;
-    spc700_instructions[0xBD] = fsBD_MOV;
-    spc700_instructions[0xBE] = fsBE_DAS;
-    spc700_instructions[0xBF] = fsBF_MOV;
-    spc700_instructions[0xC0] = fsC0_DI;
+    instructions[0xA0] = (SPC700InstructionEntry) { fsA0_EI, 1, 3 };	// .....1.. :  : I = 1
+    instructions[0xA1] = (SPC700InstructionEntry) { fsA1_TCALL, 1, 8 };	// ........ : 10       : CALL [$FFCA]
+    instructions[0xA2] = (SPC700InstructionEntry) { fsA2_SET1, 2, 4 };	// ........ : d.5      : d.5 = 1
+    instructions[0xA3] = (SPC700InstructionEntry) { fsA3_BBS, 3, 5 };	// ........ : d.5, r   : PC+=r  if d.5 == 1
+    instructions[0xA4] = (SPC700InstructionEntry) { fsA4_SBC, 2, 3 };	// NV..H.ZC : A, d     : A = A-(d)-!C
+    instructions[0xA5] = (SPC700InstructionEntry) { fsA5_SBC, 3, 4 };	// NV..H.ZC : A, !a    : A = A-(a)-!C
+    instructions[0xA6] = (SPC700InstructionEntry) { fsA6_SBC, 1, 3 };	// NV..H.ZC : A, (X)   : A = A-(X)-!C
+    instructions[0xA7] = (SPC700InstructionEntry) { fsA7_SBC, 2, 6 };	// NV..H.ZC : A, [d+X] : A = A-([d+X])-!C
+    instructions[0xA8] = (SPC700InstructionEntry) { fsA8_SBC, 2, 2 };	// NV..H.ZC : A, #i    : A = A-i-!C
+    instructions[0xA9] = (SPC700InstructionEntry) { fsA9_SBC, 3, 6 };	// NV..H.ZC : dd, ds   : (dd) = (dd)-(ds)-!C
+    instructions[0xAA] = (SPC700InstructionEntry) { fsAA_MOV1, 3, 4 };	// .......C : C, m.b   : C = (m.b)
+    instructions[0xAB] = (SPC700InstructionEntry) { fsAB_INC, 2, 4 };	// N.....Z. : d        : (d)++
+    instructions[0xAC] = (SPC700InstructionEntry) { fsAC_INC, 3, 5 };	// N.....Z. : !a       : (a)++
+    instructions[0xAD] = (SPC700InstructionEntry) { fsAD_CMP, 2, 2 };	// N.....ZC : Y, #i    : Y - i
+    instructions[0xAE] = (SPC700InstructionEntry) { fsAE_POP, 1, 4 };	// ........ : A        : A = (++SP)
+    instructions[0xAF] = (SPC700InstructionEntry) { fsAF_MOV, 1, 4 };	// ........ : (X)+, A  : (X++) = A      (no read)
 
-    spc700_instructions[0xC1] = fsC1_TCALL;
-    spc700_instructions[0xC2] = fsC2_SET1;
-    spc700_instructions[0xC3] = fsC3_BBS;
-    spc700_instructions[0xC4] = fsC4_MOV;
-    spc700_instructions[0xC5] = fsC5_MOV;
-    spc700_instructions[0xC6] = fsC6_MOV;
-    spc700_instructions[0xC7] = fsC7_MOV;
-    spc700_instructions[0xC8] = fsC8_CMP;
-    spc700_instructions[0xC9] = fsC9_MOV;
-    spc700_instructions[0xCA] = fsCA_MOV1;
-    spc700_instructions[0xCB] = fsCB_MOV;
-    spc700_instructions[0xCC] = fsCC_MOV;
-    spc700_instructions[0xCD] = fsCD_MOV;
-    spc700_instructions[0xCE] = fsCE_POP;
-    spc700_instructions[0xCF] = fsCF_MUL;
-    spc700_instructions[0xD0] = fsD0_BNE;
+    instructions[0xB0] = (SPC700InstructionEntry) { fsB0_BCS, 2, 2 };	// ........ : r        : PC+=r  if C == 1
+    instructions[0xB1] = (SPC700InstructionEntry) { fsB1_TCALL, 1, 8 };	// ........ : 11       : CALL [$FFC8]
+    instructions[0xB2] = (SPC700InstructionEntry) { fsB2_CLR1, 2, 4 };	// ........ : d.5      : d.5 = 0
+    instructions[0xB3] = (SPC700InstructionEntry) { fsB3_BBC, 3, 5 };	// ........ : d.5, r   : PC+=r  if d.5 == 0
+    instructions[0xB4] = (SPC700InstructionEntry) { fsB4_SBC, 2, 4 };	// NV..H.ZC : A, d+X   : A = A-(d+X)-!C
+    instructions[0xB5] = (SPC700InstructionEntry) { fsB5_SBC, 3, 5 };	// NV..H.ZC : A, !a+X  : A = A-(a+X)-!C
+    instructions[0xB6] = (SPC700InstructionEntry) { fsB6_SBC, 3, 5 };	// NV..H.ZC : A, !a+Y  : A = A-(a+Y)-!C
+    instructions[0xB7] = (SPC700InstructionEntry) { fsB7_SBC, 2, 6 };	// NV..H.ZC : A, [d]+Y : A = A-([d]+Y)-!C
+    instructions[0xB8] = (SPC700InstructionEntry) { fsB8_SBC, 3, 5 };	// NV..H.ZC : d, #i    : (d) = (d)-i-!C
+    instructions[0xB9] = (SPC700InstructionEntry) { fsB9_SBC, 1, 5 };	// NV..H.ZC : (X), (Y) : (X) = (X)-(Y)-!C
+    instructions[0xBA] = (SPC700InstructionEntry) { fsBA_MOVW, 2, 5 };	// N.....Z. : YA, d    : YA = word (d)
+    instructions[0xBB] = (SPC700InstructionEntry) { fsBB_INC, 2, 5 };	// N.....Z. : d+X      : (d+X)++
+    instructions[0xBC] = (SPC700InstructionEntry) { fsBC_INC, 1, 2 };	// N.....Z. : A        : A++
+    instructions[0xBD] = (SPC700InstructionEntry) { fsBD_MOV, 1, 2 };	// ........ : SP, X    : SP = X
+    instructions[0xBE] = (SPC700InstructionEntry) { fsBE_DAS, 1, 3 };	// N.....ZC : A        : decimal adjust for subtraction
+    instructions[0xBF] = (SPC700InstructionEntry) { fsBF_MOV, 1, 4 };	// N.....Z. : A, (X)+  : A = (X++)
 
-    spc700_instructions[0xD1] = fsD1_TCALL;
-    spc700_instructions[0xD2] = fsD2_CLR1;
-    spc700_instructions[0xD3] = fsD3_BBC;
-    spc700_instructions[0xD4] = fsD4_MOV;
-    spc700_instructions[0xD5] = fsD5_MOV;
-    spc700_instructions[0xD6] = fsD6_MOV;
-    spc700_instructions[0xD7] = fsD7_MOV;
-    spc700_instructions[0xD8] = fsD8_MOV;
-    spc700_instructions[0xD9] = fsD9_MOV;
-    spc700_instructions[0xDA] = fsDA_MOVW;
-    spc700_instructions[0xDB] = fsDB_MOV;
-    spc700_instructions[0xDC] = fsDC_DEC;
-    spc700_instructions[0xDD] = fsDD_MOV;
-    spc700_instructions[0xDE] = fsDE_CBNE;
-    spc700_instructions[0xDF] = fsDF_DAA;
+    instructions[0xC0] = (SPC700InstructionEntry) { fsC0_DI, 1, 3 };	// .....0.. :  : I = 0
+    instructions[0xC1] = (SPC700InstructionEntry) { fsC1_TCALL, 1, 8 };	// ........ : 12       : CALL [$FFC6]
+    instructions[0xC2] = (SPC700InstructionEntry) { fsC2_SET1, 2, 4 };	// ........ : d.6      : d.6 = 1
+    instructions[0xC3] = (SPC700InstructionEntry) { fsC3_BBS, 3, 5 };	// ........ : d.6, r   : PC+=r  if d.6 == 1
+    instructions[0xC4] = (SPC700InstructionEntry) { fsC4_MOV, 2, 4 };	// ........ : d, A     : (d) = A        (read)
+    instructions[0xC5] = (SPC700InstructionEntry) { fsC5_MOV, 3, 5 };	// ........ : !a, A    : (a) = A        (read)
+    instructions[0xC6] = (SPC700InstructionEntry) { fsC6_MOV, 1, 4 };	// ........ : (X), A   : (X) = A        (read)
+    instructions[0xC7] = (SPC700InstructionEntry) { fsC7_MOV, 2, 7 };	// ........ : [d+X], A : ([d+X]) = A    (read)
+    instructions[0xC8] = (SPC700InstructionEntry) { fsC8_CMP, 2, 2 };	// N.....ZC : X, #i    : X - i
+    instructions[0xC9] = (SPC700InstructionEntry) { fsC9_MOV, 3, 5 };	// ........ : !a, X    : (a) = X        (read)
+    instructions[0xCA] = (SPC700InstructionEntry) { fsCA_MOV1, 3, 6 };	// ........ : m.b, C   : (m.b) = C
+    instructions[0xCB] = (SPC700InstructionEntry) { fsCB_MOV, 2, 4 };	// ........ : d, Y     : (d) = Y        (read)
+    instructions[0xCC] = (SPC700InstructionEntry) { fsCC_MOV, 3, 5 };	// ........ : !a, Y    : (a) = Y        (read)
+    instructions[0xCD] = (SPC700InstructionEntry) { fsCD_MOV, 2, 2 };	// N.....Z. : X, #i    : X = i
+    instructions[0xCE] = (SPC700InstructionEntry) { fsCE_POP, 1, 4 };	// ........ : X        : X = (++SP)
+    instructions[0xCF] = (SPC700InstructionEntry) { fsCF_MUL, 1, 9 };	// N.....Z. : YA       : YA = Y * A, NZ on Y only
 
-    spc700_instructions[0xE1] = fsE1_TCALL;
-    spc700_instructions[0xE2] = fsE2_SET1;
-    spc700_instructions[0xE3] = fsE3_BBS;
-    spc700_instructions[0xE4] = fsE4_MOV;
-    spc700_instructions[0xE5] = fsE5_MOV;
-    spc700_instructions[0xE6] = fsE6_MOV;
-    spc700_instructions[0xE7] = fsE7_MOV;
-    spc700_instructions[0xE8] = fsE8_MOV;
-    spc700_instructions[0xE9] = fsE9_MOV;
-    spc700_instructions[0xEA] = fsEA_NOT1;
-    spc700_instructions[0xEB] = fsEB_MOV;
-    spc700_instructions[0xEC] = fsEC_MOV;
-    spc700_instructions[0xED] = fsED_NOTC;
-    spc700_instructions[0xEE] = fsEE_POP;
-    spc700_instructions[0xEF] = fsEF_SLEEP;
-    spc700_instructions[0xF0] = fsF0_BEQ;
+    instructions[0xD0] = (SPC700InstructionEntry) { fsD0_BNE, 2, 2 };	// ........ : r        : PC+=r  if Z == 0
+    instructions[0xD1] = (SPC700InstructionEntry) { fsD1_TCALL, 1, 8 };	// ........ : 13       : CALL [$FFC4]
+    instructions[0xD2] = (SPC700InstructionEntry) { fsD2_CLR1, 2, 4 };	// ........ : d.6      : d.6 = 0
+    instructions[0xD3] = (SPC700InstructionEntry) { fsD3_BBC, 3, 5 };	// ........ : d.6, r   : PC+=r  if d.6 == 0
+    instructions[0xD4] = (SPC700InstructionEntry) { fsD4_MOV, 2, 5 };	// ........ : d+X, A   : (d+X) = A      (read)
+    instructions[0xD5] = (SPC700InstructionEntry) { fsD5_MOV, 3, 6 };	// ........ : !a+X, A  : (a+X) = A      (read)
+    instructions[0xD6] = (SPC700InstructionEntry) { fsD6_MOV, 3, 6 };	// ........ : !a+Y, A  : (a+Y) = A      (read)
+    instructions[0xD7] = (SPC700InstructionEntry) { fsD7_MOV, 2, 7 };	// ........ : [d]+Y, A : ([d]+Y) = A    (read)
+    instructions[0xD8] = (SPC700InstructionEntry) { fsD8_MOV, 2, 4 };	// ........ : d, X     : (d) = X        (read)
+    instructions[0xD9] = (SPC700InstructionEntry) { fsD9_MOV, 2, 5 };	// ........ : d+Y, X   : (d+Y) = X      (read)
+    instructions[0xDA] = (SPC700InstructionEntry) { fsDA_MOVW, 2, 5 };	// ........ : d, YA    : word (d) = YA  (read low only)
+    instructions[0xDB] = (SPC700InstructionEntry) { fsDB_MOV, 2, 5 };	// ........ : d+X, Y   : (d+X) = Y      (read)
+    instructions[0xDC] = (SPC700InstructionEntry) { fsDC_DEC, 1, 2 };	// N.....Z. : Y        : Y--
+    instructions[0xDD] = (SPC700InstructionEntry) { fsDD_MOV, 1, 2 };	// N.....Z. : A, Y     : A = Y
+    instructions[0xDE] = (SPC700InstructionEntry) { fsDE_CBNE, 3, 6 };	// ........ : d+X, r   : CMP A, (d+X) then BNE
+    instructions[0xDF] = (SPC700InstructionEntry) { fsDF_DAA, 1, 3 };	// N.....ZC : A        : decimal adjust for addition
 
-    spc700_instructions[0xF1] = fsF1_TCALL;
-    spc700_instructions[0xF2] = fsF2_CLR1;
-    spc700_instructions[0xF3] = fsF3_BBC;
-    spc700_instructions[0xF4] = fsF4_MOV;
-    spc700_instructions[0xF5] = fsF5_MOV;
-    spc700_instructions[0xF6] = fsF6_MOV;
-    spc700_instructions[0xF7] = fsF7_MOV;
-    spc700_instructions[0xF8] = fsF8_MOV;
-    spc700_instructions[0xF9] = fsF9_MOV;
-    spc700_instructions[0xFA] = fsFA_MOV;
-    spc700_instructions[0xFB] = fsFB_MOV;
-    spc700_instructions[0xFC] = fsFC_INC;
-    spc700_instructions[0xFD] = fsFD_MOV;
-    spc700_instructions[0xFE] = fsFE_DBNZ;
+    instructions[0xE0] = (SPC700InstructionEntry) { fsE0_CLRV, 1, 2 };	// .0..0... :  : V = 0, H = 0
+    instructions[0xE1] = (SPC700InstructionEntry) { fsE1_TCALL, 1, 8 };	// ........ : 14       : CALL [$FFC2]
+    instructions[0xE2] = (SPC700InstructionEntry) { fsE2_SET1, 2, 4 };	// ........ : d.7      : d.7 = 1
+    instructions[0xE3] = (SPC700InstructionEntry) { fsE3_BBS, 3, 5 };	// ........ : d.7, r   : PC+=r  if d.7 == 1
+    instructions[0xE4] = (SPC700InstructionEntry) { fsE4_MOV, 2, 3 };	// N.....Z. : A, d     : A = (d)
+    instructions[0xE5] = (SPC700InstructionEntry) { fsE5_MOV, 3, 4 };	// N.....Z. : A, !a    : A = (a)
+    instructions[0xE6] = (SPC700InstructionEntry) { fsE6_MOV, 1, 3 };	// N.....Z. : A, (X)   : A = (X)
+    instructions[0xE7] = (SPC700InstructionEntry) { fsE7_MOV, 2, 6 };	// N.....Z. : A, [d+X] : A = ([d+X])
+    instructions[0xE8] = (SPC700InstructionEntry) { fsE8_MOV, 2, 2 };	// N.....Z. : A, #i    : A = i
+    instructions[0xE9] = (SPC700InstructionEntry) { fsE9_MOV, 3, 4 };	// N.....Z. : X, !a    : X = (a)
+    instructions[0xEA] = (SPC700InstructionEntry) { fsEA_NOT1, 3, 5 };	// ........ : m.b      : m.b = ~m.b
+    instructions[0xEB] = (SPC700InstructionEntry) { fsEB_MOV, 2, 3 };	// N.....Z. : Y, d     : Y = (d)
+    instructions[0xEC] = (SPC700InstructionEntry) { fsEC_MOV, 3, 4 };	// N.....Z. : Y, !a    : Y = (a)
+    instructions[0xED] = (SPC700InstructionEntry) { fsED_NOTC, 1, 3 };	// .......C :  : C = !C
+    instructions[0xEE] = (SPC700InstructionEntry) { fsEE_POP, 1, 4 };	// ........ : Y        : Y = (++SP)
+    instructions[0xEF] = (SPC700InstructionEntry) { fsEF_SLEEP, 1, 0 };	// ........ :  : Halts the processor
 
+    instructions[0xF0] = (SPC700InstructionEntry) { fsF0_BEQ, 2, 2 };	// ........ : r        : PC+=r  if Z == 1
+    instructions[0xF1] = (SPC700InstructionEntry) { fsF1_TCALL, 1, 8 };	// ........ : 15       : CALL [$FFC0]
+    instructions[0xF2] = (SPC700InstructionEntry) { fsF2_CLR1, 2, 4 };	// ........ : d.7      : d.7 = 0
+    instructions[0xF3] = (SPC700InstructionEntry) { fsF3_BBC, 3, 5 };	// ........ : d.7, r   : PC+=r  if d.7 == 0
+    instructions[0xF4] = (SPC700InstructionEntry) { fsF4_MOV, 2, 4 };	// N.....Z. : A, d+X   : A = (d+X)
+    instructions[0xF5] = (SPC700InstructionEntry) { fsF5_MOV, 3, 5 };	// N.....Z. : A, !a+X  : A = (a+X)
+    instructions[0xF6] = (SPC700InstructionEntry) { fsF6_MOV, 3, 5 };	// N.....Z. : A, !a+Y  : A = (a+Y)
+    instructions[0xF7] = (SPC700InstructionEntry) { fsF7_MOV, 2, 6 };	// N.....Z. : A, [d]+Y : A = ([d]+Y)
+    instructions[0xF8] = (SPC700InstructionEntry) { fsF8_MOV, 2, 3 };	// N.....Z. : X, d     : X = (d)
+    instructions[0xF9] = (SPC700InstructionEntry) { fsF9_MOV, 2, 4 };	// N.....Z. : X, d+Y   : X = (d+Y)
+    instructions[0xFA] = (SPC700InstructionEntry) { fsFA_MOV, 3, 5 };	// ........ : dd, ds   : (dd) = (ds)    (no read)
+    instructions[0xFB] = (SPC700InstructionEntry) { fsFB_MOV, 2, 4 };	// N.....Z. : Y, d+X   : Y = (d+X)
+    instructions[0xFC] = (SPC700InstructionEntry) { fsFC_INC, 1, 2 };	// N.....Z. : Y        : Y++
+    instructions[0xFD] = (SPC700InstructionEntry) { fsFD_MOV, 1, 2 };	// N.....Z. : Y, A     : Y = A
+    instructions[0xFE] = (SPC700InstructionEntry) { fsFE_DBNZ, 2, 4 };	// ........ : Y, r     : Y-- then JNZ
+    instructions[0xFF] = (SPC700InstructionEntry) { fsFF_STOP, 1, 0 };	// ........ :  : Halts the processor 
 }
 
 #pragma endregion
