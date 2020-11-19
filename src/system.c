@@ -25,9 +25,9 @@ uint8_t *accessAddressFromBank_hiRom(uint8_t bank, uint16_t addr);
 void cycle();
 _Bool execute;
 unsigned int cycle_counter;
-uint8_t system_memory[131072];
-uint8_t reserved_memory[0x2000];
-uint8_t hardware_registers[16383];
+uint8_t system_memory[ 0x20000 ];
+uint8_t reserved_memory[ 0x2000 ];
+uint8_t hardware_registers[ 16383 ];
 
 #pragma endregion
 
@@ -95,6 +95,7 @@ void cycle() {
         }
         else {
             ExecuteNextInstruction();
+            spc700_execute_next_instruction();
         }
         cycle_counter++;
     }

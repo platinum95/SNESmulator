@@ -1,6 +1,6 @@
 CC		    = gcc
 INCLUDES    = -I$(PWD)/include -I$(PWD)/CMore/
-CFLAGS	    = $(INCLUDES) -MMD -O0 -w -g -Werror=vla -march=native
+CFLAGS	    = $(INCLUDES) -Wno-unknown-pragmas -MMD -O0 -g -Wall -Werror -Wextra -Wformat=2 -Wshadow -pedantic -Werror=vla -march=native
 LIBS		=
 
 DEFINES	 =
