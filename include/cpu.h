@@ -161,8 +161,6 @@ void f10_BPL();
 
 //BRA nearlabel    80    Program Counter Relative        2
 void f80_BRA();
-void f80_BRA2();
-void work_you_fuck();
 
 //BRK    0    Stack / Interrupt    � - DI�    28
 void f00_BRK();

@@ -1,7 +1,7 @@
 #include "cartridge.h"
 #include "system.h"
 
-int main( char argc, char **argv ) {
+int main() {
 
     const char* romPath = "smk.sfc";
     if ( LoadRom( romPath ) ) {

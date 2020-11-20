@@ -162,13 +162,6 @@ static uint16_t get_stack_pointer() {
 }
 */
 
-
-
-/* Access the SPC memory */
-uint8_t *get_spc_memory() {
-    return spc_memory;
-}
-
 uint8_t *spc_memory_map( uint16_t addr ) {
     if ( addr > 0x0000 && addr <= 0x00EF ) {
         return &spc_memory[ addr ];

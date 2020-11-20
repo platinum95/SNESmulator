@@ -42,7 +42,7 @@ uint32_t get4Byte(uint8_t* loc);
 void store2Byte(uint16_t loc, uint16_t val);
 
 //Store a 4 byte unsigned short in location, emulation mapped
-void store4Byte(uint16_t loc, uint32_t val);
+void store4Byte(uint32_t loc, uint32_t val);
 
 //Store a 2 byte unsigned short in local space
 void store2Byte_local(uint8_t* loc, uint16_t val);

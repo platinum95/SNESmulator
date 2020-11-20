@@ -17,13 +17,11 @@
 
 
 
-const char* getLine(FILE * file) {
+void getLine( FILE * file, char buf[ 78 ] ) {
     int n = 78;
-    const char* buf = malloc(n);
-    const char buf2[3];
+    char buf2[3];
     fgets(buf, n, file);
     fgets(buf2, 3, file);
-    return buf;
 }
 
 int hex_to_int(char hex_char) {
@@ -157,7 +155,8 @@ static uint8_t parsePRegister( const char* line, uint8_t *pRegOut ) {
 }
 
 struct execution parseNextLine(FILE *file) {
-    const char *line = getLine( file );
+    char line[ 78 ];
+    getLine( file, line );
 //    printf(line);
 //    printf("\n");
     struct execution ex;
@@ -174,18 +173,6 @@ FILE *comp_file;
 int start_comp() {
     comp_file = fopen("exec_comp.txt", "r");
     return 0;
-}
-
-static const char *byte_to_binary(uint8_t x) {
-    static char b[9];
-    b[0] = '\0';
-
-    int z;
-    for (z = 128; z > 0; z >>= 1) {
-        strcat(b, ((x & z) == z) ? "1" : "0");
-    }
-
-    return b;
 }
 
 static void EncodePRegister( uint8_t regValue, char outBuffer[ 9 ] ) {

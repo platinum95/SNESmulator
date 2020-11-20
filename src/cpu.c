@@ -11,16 +11,17 @@
 
 #include "system.h"
 
-static bool inEmulationMode = 1, carryIsEmulationBit = 0;
+# define UNUSED(x) UNUSED_ ## x __attribute__((unused))
 
-static char registers[30 * 2];
+static bool inEmulationMode = 1;
+
 static void(*instructions[16 * 16])();
 
 static uint16_t p_register;
 
 static uint16_t accumulator;
 static uint16_t program_counter;
-static uint8_t *stack_pointer;
+static uint16_t stack_pointer;
 static uint32_t stack;
 static uint16_t data_bank_register;
 static uint16_t program_bank_register;
@@ -31,7 +32,6 @@ static uint8_t emulation_flag; //emulation flag, lowest bit only
 
 static uint32_t call_stack[30];
 static uint8_t cs_counter = 0;
-static bool accumulator_is_8bit = 1;
 
 #pragma region private_functions
 
@@ -98,14 +98,7 @@ uint16_t absolute_long_16();
 uint8_t absolute_indexed_long_8();
 uint16_t absolute_indexed_long_16();
 
-uint8_t absolute_indirect_8();
 uint16_t absolute_indirect_16();
-
-uint8_t absolute_indirect_long_8();
-uint16_t absolute_indirect_long_16();
-
-uint8_t absolute_indexed_indirect_8();
-uint16_t absolute_indexed_indirect_16();
 
 uint8_t stack_relative_8();
 uint16_t stack_relative_16();
@@ -120,13 +113,14 @@ uint16_t stack_relative_indirect_indexed_16();
 
 void InitialiseCpu( RomTypes romType ) {
 
+    // TODO - get actual entry point addresses
     if ( romType == LoRom )
-        program_counter = 0x01FF70;
+        program_counter = 0xFF70;
     else if ( romType == HiRom )
-        program_counter =  0x01FF70;
+        program_counter =  0xFF70;
 
     program_bank_register = 0x00;
-    stack_pointer = access_address( 0x7E0000 );
+    stack_pointer = 0x8000;
     direct_page = (uint16_t)0x00;
     p_register = 0x34;
     inEmulationMode = 0x01;
@@ -151,7 +145,6 @@ uint8_t prev_instr = 0;
 void ExecuteNextInstruction() {
     static int counter = 0;
     counter++;
-    uint8_t *romLoc = getRomData();
     uint32_t instruction_addr = getMappedInstructionAddr( program_bank_register, program_counter );
 
     instruction_addr &= ~0x800000;
@@ -162,31 +155,16 @@ void ExecuteNextInstruction() {
     if (counter == 1)
         start_comp();
 
-    /*if (current_instruction == 0xd0 && prev_instr == 0xcd) {
-        uint8_t comparison;
-        do{
-            struct execution currentEx = createEx();
-            comparison = compare(currentEx);
-        } while (comparison != 0);
-
+    
+    struct execution currentEx = createEx();
+    uint8_t comparison = compare(currentEx);
+    if ( comparison != 0 ) {
+        printf( "Mismatch\n" );
     }
-    else*/ {
-        struct execution currentEx = createEx();
-        uint8_t comparison = compare(currentEx);
-        if ( comparison != 0 ) {
-            int hello = 0;
-        }
-    }
-     prev_instr = current_instruction;
-    //bsnes bvs - 8567. our bvs - 8545
-    //next is -> their Z-z at 23148, ours at 23138
-    // ours 23178, theirs 23196
-    /*if (current_instruction == 0x80)
-        work_you_fuck();
-    else*/ {
-        void(*next_instruction)() = *instructions[current_instruction];
-         next_instruction();
-    }
+    prev_instr = current_instruction;
+    // Current max score - 8544
+    void(*next_instruction)() = *instructions[current_instruction];
+    next_instruction();
 }
 
 void set_p_register_16(uint16_t val, uint8_t flags) {
@@ -335,19 +313,20 @@ uint32_t absolute_indexed_long() {
     return absolute_long() + X;
 }
 
+// TODO - these should be mapped
 uint16_t absolute_indirect() {
     uint16_t operand = immediate_16();
-    uint16_t addr = get2Byte(accessSystemRam()[operand]);
+    uint16_t addr = get2Byte( &accessSystemRam()[ operand ] );
     return addr;
 }
 uint32_t absolute_indirect_long() {
     uint16_t operand = immediate_16();
-    uint32_t addr = get3Byte(accessSystemRam()[operand]);
+    uint32_t addr = get3Byte( &accessSystemRam()[ operand ] );
     return addr;
 }
 uint16_t absolute_indexed_indirect() {
     uint16_t operand = immediate_16();
-    uint16_t addr = get2Byte(accessSystemRam()[operand + X]);
+    uint16_t addr = get2Byte( &accessSystemRam()[ operand + X ] );
     return addr;
 }
 
@@ -504,7 +483,7 @@ void PopulateInstructions() {
     instructions[0x7E] = f7E_ROR;
     instructions[0x7F] = f7F_ADC;
     //
-    instructions[0x80] = work_you_fuck;
+    instructions[0x80] = f80_BRA;
     instructions[0x81] = f81_STA;
     instructions[0x82] = f82_BRL;
     instructions[0x83] = f83_STA;
@@ -643,35 +622,36 @@ void PopulateInstructions() {
 
 }
 
+// TODO - These addressing modes really need standardising, like the SPC
 #pragma region data_access
 
 uint8_t direct_8() {
     return *accessAddressFromBank( 0x00, direct() );
-};
+}
 uint16_t direct_16() {
     return get2Byte( accessAddressFromBank( 0x00, direct() ) );
-};
+}
 
 uint8_t direct_indexed_x_8() {
     return *access_address( direct_indexed_x() );
-};
+}
 uint16_t direct_indexed_x_16() {
-    return get2Byte( direct_indexed_x() );
-};
+    return get2Byte( access_address( direct_indexed_x() ) );
+}
 
 uint8_t direct_indexed_y_8() {
-    return access_address( direct_indexed_y() );
-};
+    return *access_address( direct_indexed_y() );
+}
 uint16_t direct_indexed_y_16() {
     return get2Byte( access_address( direct_indexed_y() ) );
-};
+}
 
 uint8_t direct_indirect_8() {
     return *access_address( direct_indirect () );;
-};
+}
 uint16_t direct_indirect_16() {
     return get2Byte( access_address( direct_indirect() ) );
-};
+}
 
 uint8_t direct_indexed_indirect_8() {
     return *access_address( direct_indexed_indirect() );
@@ -706,10 +686,7 @@ uint8_t absolute_8() {
     return *access_address( new_addr );
 }
 uint16_t absolute_16() {
-    uint32_t new_addr = absolute();
-    uint8_t *addr = access_address(new_addr);
-    uint16_t data = get2Byte(access_address(new_addr));
-    return data;
+    return get2Byte( access_address( absolute() ) );
 }
 
 uint8_t absolute_indexed_x_8() {
@@ -760,14 +737,15 @@ uint16_t absolute_indexed_long_16() {
     return data;
 }
 
-uint8_t absolute_indirect_8() {}
-uint16_t absolute_indirect_16() {}
+uint16_t absolute_indirect_16() {
+    return get2Byte( access_address( absolute_indirect() ) );
+}
 
-uint8_t absolute_indirect_long_8() {}
-uint16_t absolute_indirect_long_16() {}
-uint32_t absolute_indirect_long_32() {}
+uint32_t absolute_indirect_long_32() {
+    return 0; // TODO
+}
 
-uint8_t absolute_indexed_indirect_8() {}
+
 uint16_t absolute_indexed_indirect_16(){
     const uint32_t pLoc = absolute_indexed_x();
     return get2Byte(access_address(pLoc));
@@ -795,45 +773,43 @@ uint16_t stack_relative_indirect_indexed_16(){
     return data;
 }
 
-void push_to_stack_8(uint8_t val, uint32_t *stack) {
-    uint8_t *local_pointer = accessAddressFromBank(0x00, *stack);
+void push_to_stack_8( uint8_t val ) {
+    uint8_t *local_pointer = accessAddressFromBank( 0x00, stack );
     *local_pointer = val;
     stack_pointer -= 1;
-    *stack -= 1;
+    stack -= 1;
 }
 
-void push_to_stack_32(uint32_t val, uint32_t *stack) {
-    uint8_t* local_pointer = access_address(*stack);
-    store4Byte(local_pointer, val);
+void push_to_stack_32( uint32_t val ) {
+    store4Byte( stack_pointer, val );
     stack_pointer -= 4;
-    *stack -= 4;
+    stack -= 4;
 }
 
-void push_to_stack_16(uint16_t val, uint32_t *stack) {
+void push_to_stack_16( uint16_t val ) {
     uint8_t low_byte = (uint8_t) val;
     uint8_t high_byte = val >> 8;
-    push_to_stack_8(high_byte, stack);
-    push_to_stack_8(low_byte, stack);
+    push_to_stack_8( high_byte );
+    push_to_stack_8( low_byte );
 }
 
 
-uint8_t pull_from_stack_8(uint32_t *stack) {
-    *stack += 1;
-    uint32_t stack_val = *stack;
-    uint8_t *local_pointer = access_address(stack_val);
+uint8_t pull_from_stack_8() {
+    stack += 1;
+    uint8_t *local_pointer = access_address( stack );
     stack_pointer += 1;
     return *local_pointer;
 }
 
-uint32_t pull_from_stack_32(uint32_t *stack) {
-    uint8_t* local_pointer = access_address(*stack);
+uint32_t pull_from_stack_32() {
+    uint8_t* local_pointer = access_address( stack );
     stack_pointer += 4;
-    return get4Byte(local_pointer);
+    return get4Byte( local_pointer );
 }
 
-uint16_t pull_from_stack_16(uint32_t *stack) {
-    uint8_t low_byte = pull_from_stack_8(stack);
-    uint8_t high_byte = pull_from_stack_8(stack);
+uint16_t pull_from_stack_16() {
+    uint8_t low_byte = pull_from_stack_8();
+    uint8_t high_byte = pull_from_stack_8();
     uint16_t ret = high_byte;
     ret <<= 8;
     ret |= low_byte;
@@ -1311,11 +1287,12 @@ void fF0_BEQ(){
 }
 
 #pragma region BIT
-void BIT_8(uint8_t val) {
-    uint16_t anded = val & accumulator;
+void BIT_8( uint8_t UNUSED( val ) ) {
+    // TODO
+    
 }
-void BIT_16(uint16_t val) {
-
+void BIT_16( uint16_t UNUSED( val ) ) {
+    // TODO
 }
 //BIT dp    24    Direct Page    NV� - Z - 2
 void f24_BIT(){
@@ -1355,7 +1332,7 @@ void f89_BIT(){
 
 //BMI nearlabel    30    Program Counter Relative        2
 void f30_BMI(){
-    if (NEGATIVE_FLAG & p_register == 0)
+    if ( ( p_register & NEGATIVE_FLAG ) == 0 )
         program_counter += 2;
     else {
         char adjust = (char)immediate_8();
@@ -1394,19 +1371,6 @@ void f80_BRA(){
     return;
 }
 
-//BRA nearlabel    80    Program Counter Relative        2
-void f80_BRA2() {
-    char adjust = (char)immediate_8();
-    program_counter += adjust + 2;
-    return;
-}
-
-void work_you_fuck() {
-    char adjust = (char)immediate_8();
-    program_counter += adjust + 2;
-    return;
-}
-
 //BRK    0    Stack / Interrupt    � - DI�    28
 void f00_BRK(){
     call_stack[cs_counter++] = program_counter = 2;
@@ -1421,7 +1385,7 @@ void f82_BRL(){
 
 //BVC nearlabel    50    Program Counter Relative        2
 void f50_BVC(){
-    if (OVERFLOW_FLAG & p_register == 1)
+    if ( ( OVERFLOW_FLAG & p_register ) == 1)
         program_counter += 2;
     else {
         char adjust = (char)immediate_8();
@@ -1806,13 +1770,13 @@ void DEC_16(uint8_t* local_address) {
     set_p_register_16(val, NEGATIVE_FLAG | ZERO_FLAG);
 }
 
-void DEC(uint8_t* local_address) {
+void DEC( uint8_t* local_address ) {
     if (m_flag() == 0)
         DEC_16(local_address);
     else
         DEC_8(local_address);
 }
-void DECX(uint8_t* local_address) {
+void DECX( uint8_t* local_address ) {
     if (x_flag() == 0)
         DEC_16(local_address);
     else
@@ -1821,7 +1785,7 @@ void DECX(uint8_t* local_address) {
 
 //DEC A    3A    Accumulator    N��Z - 1
 void f3A_DEC(){
-    DEC(&accumulator);
+    DEC( (uint8_t*) &accumulator );
     program_counter += 1;
 }
 
@@ -1859,13 +1823,13 @@ void fDE_DEC(){
 
 //DEX    CA    Implied    N��Z - 1
 void fCA_DEX(){
-    DECX(&X);
+    DECX( (uint8_t*) &X );
     program_counter += 1;
 }
 
 //DEY    88    Implied    N��Z - 1
 void f88_DEY(){
-    DECX(&Y);
+    DECX( (uint8_t*) &Y );
     program_counter += 1;
 }
 
@@ -1896,7 +1860,7 @@ void INCX(uint8_t* local_address) {
 
 //INC A    1A    Accumulator    N��Z - 1
 void f1A_INC() {
-    INC(&accumulator);
+    INC( (uint8_t*) &accumulator );
     program_counter += 1;
 }
 
@@ -1934,13 +1898,13 @@ void fFE_INC() {
 
 //INX    E8    Implied    N��Z - 1
 void fE8_INX() {
-    INCX(&X);
+    INCX( (uint8_t*) &X );
     program_counter += 1;
 }
 
 //INY    C8    Implied    N��Z - 1
 void fC8_INY() {
-    INCX(&Y);
+    INCX( (uint8_t*) &Y );
     program_counter += 1;
 }
 #pragma endregion
@@ -2180,7 +2144,7 @@ void fDC_JMP(){
 //JSR addr    20    Absolute        3
 void f20_JSR(){
     uint16_t operand = absolute();
-    push_to_stack_16(program_counter + 2, &stack);
+    push_to_stack_16( program_counter + 2 );
     program_counter = operand;
 }
 
@@ -2188,9 +2152,9 @@ void f20_JSR(){
 void f22_JSR(){
     uint32_t operand = absolute_long();
     uint8_t pbr = program_bank_register;
-    push_to_stack_8(pbr, &stack);
+    push_to_stack_8( pbr );
     uint16_t addr = program_counter;
-    push_to_stack_16(addr + 3, &stack);
+    push_to_stack_16( addr + 3 );
     program_counter = operand;
     operand >>= 16;
     program_bank_register = operand;
@@ -2200,7 +2164,7 @@ void f22_JSR(){
 //JSR(addr, X))    FC    Absolute Indexed Indirect        3
 void fFC_JSR(){
     uint16_t operand = absolute_indexed_indirect_16();
-    push_to_stack_16(program_counter + 2, &stack);
+    push_to_stack_16( program_counter + 2 );
     program_counter = operand;
 }
 #pragma endregion
@@ -2536,24 +2500,26 @@ void fBC_LDY(){
 #pragma endregion
 
 #pragma region LSR
-void LSR_8(uint8_t *local_address) {
+void LSR_8( uint8_t *local_address ) {
     uint8_t val = *local_address;
     p_register |= CARRY_FLAG & accumulator;
-    val >> 1;
+    val >>= 1;
+    *local_address = val;
 }
-void LSR_16(uint8_t *local_address) {
+void LSR_16( uint8_t *local_address ) {
     uint16_t val = get2Byte(local_address);
     p_register |= CARRY_FLAG & accumulator;
-    val >> 1;
+    val >>= 1;
+    *local_address = val; // TODO 
 }
 
 //LSR dp    46    Direct Page    N��ZC    2
 void f46_LSR(){
     if (m_flag() == 0) {
-        LSR_16(direct());
+        LSR_16( access_address( direct() ) );
     }
     else {
-        LSR_8(direct());
+        LSR_8( access_address( direct() ) );
     }
     
     program_counter += 2;
@@ -2569,10 +2535,10 @@ void f4A_LSR(){
 //LSR addr    4E    Absolute    N��ZC    3
 void f4E_LSR(){
     if (m_flag() == 0) {
-        LSR_16(absolute());
+        LSR_16( access_address( absolute() ) );
     }
     else {
-        LSR_8(absolute());
+        LSR_8( access_address( absolute() ) );
     }
 
     program_counter += 3;
@@ -2581,10 +2547,10 @@ void f4E_LSR(){
 //LSR dp, X    56    DP Indexed, X    N��ZC    2
 void f56_LSR(){
     if (m_flag() == 0) {
-        LSR_16(direct_indexed_x());
+        LSR_16( access_address( direct_indexed_x() ) );
     }
     else {
-        LSR_8(direct_indexed_x());
+        LSR_8( access_address( direct_indexed_x() ) );
     }
 
     program_counter += 2;
@@ -2593,10 +2559,10 @@ void f56_LSR(){
 //LSR addr, X    5E    Absolute Indexed, X    N��ZC    3
 void f5E_LSR(){
     if (m_flag() == 0) {
-        LSR_16(absolute_indexed_x());
+        LSR_16( access_address( absolute_indexed_x() ) );
     }
     else {
-        LSR_8(absolute_indexed_x());
+        LSR_8( access_address( absolute_indexed_x() ) );
     }
 
     program_counter += 3;
@@ -2605,7 +2571,6 @@ void f5E_LSR(){
 
 //MVN srcbk, destbk    54    Block Move        3
 void f54_MVN(){
-    uint16_t bytes_to_move = accumulator + 1;
     uint8_t src_blk = immediate_8();
     uint16_t src_addr = X;
     program_counter++;
@@ -2834,64 +2799,64 @@ void f1F_ORA(){
 //PEA addr    F4    Stack(Absolute)        3
 void fF4_PEA(){
     uint16_t operand = immediate_16();
-    push_to_stack_16(operand, &stack);
+    push_to_stack_16( operand );
     program_counter += 3;
 }
 
 //PEI(dp)    D4    Stack(DP Indirect)        2
 void fD4_PEI(){
     uint16_t operand = immediate_8();
-    push_to_stack_16(operand, &stack);
+    push_to_stack_16( operand );
     program_counter += 2;
 }
 
 //PER label    62    Stack(PC Relative Long)        3
 void f62_PER(){
     uint16_t operand = absolute_16() + program_counter;
-    push_to_stack_16(operand, &stack);
+    push_to_stack_16( operand );
     program_counter += 3;
 }
 
 //PHA    48    Stack(Push)        1
 void f48_PHA(){
     if(m_flag() == 0)
-        push_to_stack_16(accumulator, &stack);
+        push_to_stack_16( accumulator );
     else
-        push_to_stack_8(accumulator, &stack);
+        push_to_stack_8( accumulator );
 
     program_counter += 1;
 }
 
 //PHB    8B    Stack(Push)        1
 void f8B_PHB(){
-    push_to_stack_8(data_bank_register, &stack);
+    push_to_stack_8( data_bank_register );
     program_counter++;
 }
 
 //PHD    0B    Stack(Push)        1
 void f0B_PHD(){
-    push_to_stack_16(direct_page, &stack);
+    push_to_stack_16( direct_page );
     program_counter++;
 }
 
 //PHK    4B    Stack(Push)        1
 void f4B_PHK(){
-    push_to_stack_8((uint8_t) program_bank_register, &stack);
+    push_to_stack_8( (uint8_t) program_bank_register );
     program_counter++;
 }
 
 //PHP    8    Stack(Push)        1
 void f08_PHP(){
-    push_to_stack_16(p_register, &stack);
+    push_to_stack_16( p_register );
     program_counter++;
 }
 
 //PHX    DA    Stack(Push)        1
 void fDA_PHX(){
     if (x_flag() == 0)
-        push_to_stack_16(X, &stack);
+        push_to_stack_16( X );
     else
-        push_to_stack_8(X, &stack);
+        push_to_stack_8( X );
 
     program_counter += 1;
 }
@@ -2899,9 +2864,9 @@ void fDA_PHX(){
 //PHY    5A    Stack(Push)        1
 void f5A_PHY(){
     if (x_flag() == 0)
-        push_to_stack_16(Y, &stack);
+        push_to_stack_16( Y );
     else
-        push_to_stack_8(Y, &stack);
+        push_to_stack_8( Y );
 
     program_counter += 1;
 }
@@ -2909,12 +2874,12 @@ void f5A_PHY(){
 //PLA    68    Stack(Pull)    N��Z - 1
 void f68_PLA(){
     if (m_flag() == 0) {
-        accumulator = pull_from_stack_16(&stack);
+        accumulator = pull_from_stack_16();
         set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
     }
     else {
         accumulator &= 0xFF00;
-        accumulator |= pull_from_stack_8(&stack);
+        accumulator |= pull_from_stack_8();
         set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
     }
 
@@ -2923,7 +2888,7 @@ void f68_PLA(){
 
 //PLB    AB    Stack(Pull)    N��Z - 1
 void fAB_PLB(){
-    uint8_t val = pull_from_stack_8(&stack);
+    uint8_t val = pull_from_stack_8();
     data_bank_register = val;
     set_p_register_8(val, NEGATIVE_FLAG | ZERO_FLAG);
     program_counter += 1;
@@ -2931,7 +2896,7 @@ void fAB_PLB(){
 
 //PLD    2B    Stack(Pull)    N��Z - 1
 void f2B_PLD(){
-    uint16_t val = pull_from_stack_16(&stack);
+    uint16_t val = pull_from_stack_16();
     direct_page = val;
     set_p_register_8(val, NEGATIVE_FLAG | ZERO_FLAG);
     program_counter += 1;
@@ -2939,18 +2904,18 @@ void f2B_PLD(){
 
 //PLP    28    Stack(Pull)    N��Z - 1
 void f28_PLP(){
-    p_register = pull_from_stack_16(&stack);
+    p_register = pull_from_stack_16();
     program_counter += 1;
 }
 
 //PLX    FA    Stack(Pull)    N��Z - 1
 void fFA_PLX(){
     if (x_flag() == 0) {
-        X = pull_from_stack_16(&stack);
+        X = pull_from_stack_16();
         set_p_register_16(X, NEGATIVE_FLAG | ZERO_FLAG);
     }
     else {
-        X = pull_from_stack_8(&stack);
+        X = pull_from_stack_8();
         set_p_register_8(X, NEGATIVE_FLAG | ZERO_FLAG);
     }
 
@@ -2960,11 +2925,11 @@ void fFA_PLX(){
 //PLY    7A    Stack(Pull)    N��Z - 1
 void f7A_PLY(){
     if (x_flag() == 0) {
-        Y = pull_from_stack_16(&stack);
+        Y = pull_from_stack_16();
         set_p_register_16(Y, NEGATIVE_FLAG | ZERO_FLAG);
     }
     else {
-        Y = pull_from_stack_8(&stack);
+        Y = pull_from_stack_8();
         set_p_register_8(Y, NEGATIVE_FLAG | ZERO_FLAG);
     }
 
@@ -2978,7 +2943,7 @@ void ROL_8(uint8_t* addr) {
     uint8_t val = *addr;
     uint8_t c_flag = p_register & CARRY_FLAG;
     uint8_t new_c_flag = (val & 0x80) ? 0x01 : 0x00;
-    p_register &= ((~CARRY_FLAG) | new_c_flag);
+    p_register = ( p_register & ~CARRY_FLAG ) | new_c_flag;
     val <<= 1;
     val |= c_flag;
     *addr = val;
@@ -2988,7 +2953,7 @@ void ROL_16(uint8_t* addr) {
     uint16_t val = get2Byte(addr);
     uint8_t c_flag = p_register & CARRY_FLAG;
     uint8_t new_c_flag = val & 0x80000000;
-    p_register &= !CARRY_FLAG | new_c_flag;
+    p_register = ( p_register & ~CARRY_FLAG ) | new_c_flag;
     val <<= 1;
     val |= c_flag;
     store2Byte_local(addr, val);
@@ -2999,7 +2964,7 @@ void ROR_8(uint8_t* addr) {
     uint8_t val = *addr;
     uint8_t c_flag = p_register & CARRY_FLAG;
     uint8_t new_c_flag = val & CARRY_FLAG;
-    p_register &= !CARRY_FLAG | new_c_flag;
+    p_register = ( p_register & ~CARRY_FLAG ) | new_c_flag;
     c_flag <<= 7;
     val >>= 1;
     val |= c_flag;
@@ -3010,7 +2975,7 @@ void ROR_16(uint8_t* addr) {
     uint16_t val = get2Byte(addr);
     uint16_t c_flag = p_register & CARRY_FLAG;
     uint8_t new_c_flag = val & CARRY_FLAG;
-    p_register &= !CARRY_FLAG | new_c_flag;
+    p_register = ( p_register & ~CARRY_FLAG ) | new_c_flag;
     c_flag <<= 15;
     val >>= 1;
     val |= c_flag;
@@ -3032,10 +2997,10 @@ void f26_ROL(){
 //ROL A    2A    Accumulator    N��ZC    1
 void f2A_ROL(){
     if (m_flag() == 0) {
-        ROL_16(&accumulator);
+        ROL_16( (uint8_t*) &accumulator );
     }
     else {
-        ROL_8(&accumulator);
+        ROL_8( (uint8_t*) &accumulator );
     }
     program_counter += 1;
 }
@@ -3087,10 +3052,10 @@ void f66_ROR(){
 //ROR A    6A    Accumulator    N��ZC    1
 void f6A_ROR(){
     if (m_flag() == 0) {
-        ROR_16(&accumulator);
+        ROR_16( (uint8_t*) &accumulator);
     }
     else {
-        ROR_8(&accumulator);
+        ROR_8( (uint8_t*) &accumulator);
     }
     program_counter += 1;
 }
@@ -3133,16 +3098,16 @@ void f7E_ROR(){
 #pragma region returns
 //RTI    40    Stack(RTI)    NVMXDIZC    1
 void f40_RTI(){
-    p_register = pull_from_stack_16(&stack);
+    p_register = pull_from_stack_16();
     if (m_flag() == 0) {
-        uint16_t pc_addr = pull_from_stack_16(&stack);
-        uint32_t bank = pull_from_stack_8(&stack);
+        uint16_t pc_addr = pull_from_stack_16();
+        uint32_t bank = pull_from_stack_8();
         bank <<= 16;
         bank |= pc_addr;
         program_counter = bank;
     }
     else {
-        uint16_t pc_addr = pull_from_stack_16(&stack);
+        uint16_t pc_addr = pull_from_stack_16();
         uint32_t bank = program_bank_register;
         bank |= pc_addr;
         program_counter = bank;
@@ -3151,15 +3116,15 @@ void f40_RTI(){
 
 //RTL    6B    Stack(RTL)        1
 void f6B_RTL(){
-    uint16_t addr = pull_from_stack_16(&stack) + 1;
-    uint8_t bank = pull_from_stack_8(&stack);
+    uint16_t addr = pull_from_stack_16() + 1;
+    uint8_t bank = pull_from_stack_8();
     program_bank_register = bank;
     program_counter = addr;
 }
 
 //RTS    60    Stack(RTS)        1
 void f60_RTS(){
-    uint16_t addr = pull_from_stack_16(&stack) + 1;
+    uint16_t addr = pull_from_stack_16() + 1;
     program_counter = addr;
 }
 
@@ -3680,7 +3645,7 @@ void f14_TRB(){
     if (m_flag() == 0) {
         uint16_t val = get2Byte(local_addr);
         val &= accumulator;
-        store2Byte(local_addr, val);
+        *local_addr = val; //TODO
         set_p_register_16(val, ZERO_FLAG);
     }
     else {
@@ -3696,7 +3661,7 @@ void f1C_TRB(){
     if (m_flag() == 0) {
         uint16_t val = get2Byte(local_addr);
         val &= accumulator;
-        store2Byte(local_addr, val);
+        *local_addr = val; //TODO
         set_p_register_16(val, ZERO_FLAG);
     }
     else {
@@ -3711,7 +3676,7 @@ void f04_TSB(){
     if (m_flag() == 0) {
         uint16_t val = get2Byte(local_addr);
         val |= accumulator;
-        store2Byte(local_addr, val);
+        *local_addr = val; //TODO
         set_p_register_16(val, ZERO_FLAG);
     }
     else {
@@ -3726,7 +3691,7 @@ void f0C_TSB(){
     if (m_flag() == 0) {
         uint16_t val = get2Byte(local_addr);
         val |= accumulator;
-        store2Byte(local_addr, val);
+        *local_addr = val; //TODO
         set_p_register_16(val, ZERO_FLAG);
     }
     else {
