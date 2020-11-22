@@ -20,40 +20,19 @@ struct address_bus_b {
 uint8_t data_bus;
 uint8_t open_bus;
 #pragma region private_headers
-uint8_t *accessAddressFromBank_loRom(uint8_t bank, uint16_t addr);
-uint8_t *accessAddressFromBank_hiRom(uint8_t bank, uint16_t addr);
+
 void cycle();
-_Bool execute;
+bool execute;
 unsigned int cycle_counter;
-uint8_t system_memory[ 0x20000 ];
-uint8_t reserved_memory[ 0x2000 ];
-uint8_t hardware_registers[ 16383 ];
+static uint8_t system_memory[ 0x20000 ];
+static uint8_t reserved_memory[ 0x2000 ];
+static uint8_t hardware_registers[ 16383 ];
 
 #pragma endregion
 
-uint8_t *access_address(unsigned int addr) {
-    uint8_t bank = ( addr >> 16 ) & 0xFFFF;
-    uint16_t offset = addr & 0xFFFF;
-    uint8_t *dataloc = accessAddressFromBank(bank, offset);
-    if (dataloc == NULL)
-        return &open_bus;
-    
-    open_bus = *dataloc;
-    return dataloc;
-}
-
-_Bool is_reserved(const uint8_t *addr){
-    if (addr < reserved_memory || addr > reserved_memory)
-        return 0;
-    return 1;
-}
-
-uint8_t *getRomData() {
-    return emulatedCartridge.rom;
-}
-
-uint8_t *accessSystemRam() {
-    return system_memory;
+bool is_reserved( const uint8_t *addr ){
+    return ( addr >= reserved_memory )
+             && ( addr < &reserved_memory[ sizeof( reserved_memory ) ] );
 }
 
 uint32_t getMappedInstructionAddr(uint8_t bank, uint16_t addr) {
@@ -62,14 +41,6 @@ uint32_t getMappedInstructionAddr(uint8_t bank, uint16_t addr) {
     instruction_addr |= addr;
     instruction_addr &= ~0x800000;
     return instruction_addr;
-}
-
-uint8_t* accessAddressFromBank( uint8_t bank, uint16_t addr ) {
-    // TODO - consider re-pointerifying this function
-    if( emulatedCartridge.romType == LoRom )
-        return accessAddressFromBank_loRom( bank, addr );
-    else
-        return accessAddressFromBank_hiRom( bank, addr );
 }
 
 int startup() {
@@ -101,75 +72,83 @@ void cycle() {
     }
 }
 
-uint8_t *accessAddressFromBank_loRom(uint8_t bank, uint16_t offset) {
-    if ( bank <= 0x3F ) {
+uint8_t *accessAddressFromBank_loRom( MemoryAddress address ) {
+    if ( address.bank <= 0x3F ) {
         //Shadow ram
-        if ( offset <= 0x1FFF ) {
+        if ( address.offset <= 0x1FFF ) {
             int shadow_addr = 0;
-            shadow_addr = shadow_addr | offset;
+            shadow_addr = shadow_addr | address.offset;
             return &system_memory[shadow_addr];
         }
         //Hardware addresses
-        else if ( offset <= 0x5FFF ) {
-            return &hardware_registers[offset];
+        else if ( address.offset <= 0x5FFF ) {
+            return &hardware_registers[ address.offset ];
         }
         //Expansion ram
-        else if ( offset <= 0x7FFF ) {
+        else if ( address.offset <= 0x7FFF ) {
             return 0;
         }
         //Rom mapping
         else {
-            int romIndex = (bank * 0x7FFF) + offset;
-            return &emulatedCartridge.rom[romIndex];
+            int romIndex = ( address.bank * 0x7FFF ) + address.offset;
+            return &emulatedCartridge.rom[ romIndex ];
         }
     }
     //Further rom mapping
-    else if ( bank <= 0x7C ) {
-        int romIndex = (0x3F * 0x7FFF) + ((bank * 0xFFFF) + offset);
+    else if ( address.bank <= 0x7C ) {
+        int romIndex = (0x3F * 0x7FFF) + ((address.bank * 0xFFFF) + address.offset);
         return &emulatedCartridge.rom[romIndex];
     }
     //Sram
-    else if ( bank == 0x7D ) {
-        return &emulatedCartridge.sram[offset];
+    else if ( address.bank == 0x7D ) {
+        return &emulatedCartridge.sram[address.offset];
     }
     //System ram
-    else if ( bank <= 0x7F ) {
-        int ram_addr = (bank - 0x7E) * 0xFFFF + offset;
+    else if ( address.bank <= 0x7F ) {
+        int ram_addr = (address.bank - 0x7E) * 0xFFFF + address.offset;
         return &system_memory[ram_addr];
     }
     //Fast rom
     else {
-        if ( offset > 0xFF00 )
+        if ( address.offset > 0xFF00 )
             ;// TODO reset vectors
         else
-            return accessAddressFromBank(0x80 - bank, offset);
+        {
+            address.bank -= 0x80;
+            return accessAddressFromBank_loRom( address );
+        }
     }
 
     return NULL;
 }
 
-uint8_t *accessAddressFromBank_hiRom(uint8_t bank, uint16_t offset) {
-    if ( bank <= 0x3F ) {
+#include <stdio.h>
+
+uint8_t *accessAddressFromBank_hiRom( MemoryAddress address ) {
+    if ( ( address.bank == 82 || address.bank == 2 || address.bank == 0x7e ) && address.offset == 0 ){
+        printf( "bloop" );
+    }
+    if ( address.bank <= 0x3F ) {
         //Shadow ram
-        if ( offset <= 0x1FFF ) {
+        if ( address.offset <= 0x1FFF ) {
             int shadow_addr = 0;
-            shadow_addr = shadow_addr | offset;
+            shadow_addr = shadow_addr | address.offset;
             return &system_memory[shadow_addr];
         }
         //Hardware addresses
-        else if ( offset <= 0x5FFF ) {
-            if ( offset >= 0x2140 && offset < 0x2144 )
-                return access_spc_snes_mapped( offset );
+        else if (address.offset <= 0x5FFF ) {
+            if ( address.offset >= 0x2140 && address.offset < 0x2144 )
+                return access_spc_snes_mapped( address.offset );
             else
-                return &hardware_registers[ offset ];
+                return &hardware_registers[ address.offset ];
         }
         //sram
-        else if ( offset <= 0x7FFF ) {
-            const uint16_t relative_offset = offset - 0x6000;
-            if( bank <= 0x1F ){
+        else if ( address.offset <= 0x7FFF ) {
+            const uint16_t relative_offset = address.offset - 0x6000;
+            if( address.bank <= 0x1F ){
                 return &reserved_memory[ relative_offset ];
             } else {
-                int sramIndex = (bank * 0x1FFF) + relative_offset;
+                int sramIndex = (address.bank * 0x1FFF) + relative_offset;
                 return &emulatedCartridge.rom[ sramIndex ];
             }
         }
@@ -178,24 +157,25 @@ uint8_t *accessAddressFromBank_hiRom(uint8_t bank, uint16_t offset) {
             //int romIndex = (bank * 0x8000) + (offset - 0x8000);
             //0x01ff70;
             //return &emulatedCartridge.rom[romIndex];
-            uint32_t instruction_addr = getMappedInstructionAddr( bank, offset );
+            uint32_t instruction_addr = getMappedInstructionAddr( address.bank, address.offset );
             instruction_addr &= ~0x800000;
-            return &getRomData()[ instruction_addr ];
+            // TODO - add request function to Cartridge source
+            return &emulatedCartridge.rom[ instruction_addr ];
         }
     }
     //Further rom mapping
-    else if ( bank <= 0x7D ) {
-        int romIndex =  (((bank- 0x40) * 0x10000) + offset);
+    else if ( address.bank <= 0x7D ) {
+        int romIndex =  (((address.bank- 0x40) * 0x10000) + address.offset);
         return &emulatedCartridge.rom[romIndex];
     }
     //System ram
-    else if ( bank <= 0x7F ) {
-        int ram_addr = (bank - 0x7E) * 0xFFFF + offset -1;
+    else if ( address.bank <= 0x7F ) {
+        int ram_addr = (address.bank - 0x7E) * 0xFFFF + address.offset -1;
         return &system_memory[ram_addr];
     }
     //Fast rom
-    else if ( bank <= 0xFD ) {
-        uint8_t newBank = bank - 0x80;
+    else if ( address.bank <= 0xFD ) {
+        address.bank -= 0x80;
         /*
         if (newBank >= 0 && newBank <= 0x3F) {
             int romIndex = (newBank * 0x10000) + offset;
@@ -203,67 +183,38 @@ uint8_t *accessAddressFromBank_hiRom(uint8_t bank, uint16_t offset) {
         }
         else    
         */
-        return accessAddressFromBank(newBank, offset);
+        return accessAddressFromBank_hiRom( address );
     }
     //Last bt of rom
     else {
-        if (offset > 0xFF00)
+        if (address.offset > 0xFF00)
             ;// TODO reset vectors
         else {
-            int romIndex = (0x3D * 0xFFFF) + (((bank-0xFE) * 0xFFFF) + offset);
+            int romIndex = (0x3D * 0xFFFF) + (((address.bank-0xFE) * 0xFFFF) + address.offset);
+            // TODO - add request function to Cartridge source
             return &emulatedCartridge.rom[romIndex];
         }
     }
     return NULL;
 }
 
-// TODO - preprocess-out based on endianess
-//Retrieve 2 byte unsigned short from location
-uint16_t get2Byte(uint8_t* loc) {
-    uint16_t out = loc[1];
-    out = out << 8;
-    out = out | (0x00FF & loc[0]);
-    return out;
+uint8_t* snesMemoryMap( MemoryAddress address ) {
+    uint8_t *dataloc;
+
+    // TODO - consider re-pointerifying this function
+    if( emulatedCartridge.romType == LoRom ) {
+        dataloc = accessAddressFromBank_loRom( address );
+    }
+    else {
+        dataloc = accessAddressFromBank_hiRom( address );
+    }
+
+    if ( dataloc == NULL ) {
+        return &open_bus;
+    }
+
+    open_bus = *dataloc;
+    return dataloc;
+
 }
 
-//Retrieve 4 byte unsigned integer from location
-uint32_t get4Byte(uint8_t* loc) {
-    uint32_t out = 0;
-    out = out | ((0xFF000000 & loc[0]) | (0x00FF0000 & loc[1]) | (0x0000FF00 & loc[2]) | (0x000000FF & loc[3]));
-    return out;
-}
-
-//Retrieve 3 byte unsigned integer from location
-uint32_t get3Byte( uint8_t* loc ) {
-    uint32_t out = loc[2];
-    out <<= 8;
-    out |= (uint32_t)loc[ 1 ];
-    out <<= 8;
-    out |= (uint32_t) loc[ 0 ];
-    return out;
-}
-
-// TODO - these should be mapped (or better, take a pointer to host memory)
-void store2Byte(uint16_t loc, uint16_t val) {
-    system_memory[loc] = (uint8_t)(val & 0xFF00);
-    system_memory[loc + 1] = (uint8_t)(val & 0x00FF);
-}
-
-void store4Byte(uint32_t loc, uint32_t val) {
-    system_memory[loc + 0] = (uint8_t)(val & 0xFF000000);
-    system_memory[loc + 1] = (uint8_t)(val & 0x00FF0000);
-    system_memory[loc + 2] = (uint8_t)(val & 0x0000FF00);
-    system_memory[loc + 3] = (uint8_t)(val & 0x000000FF);
-}
-
-uint32_t gen3Byte(uint8_t bank, uint16_t addr) {
-    uint32_t output = bank;
-    output = bank << 16;
-    output = output | addr;
-    return output;
-}
-
-void store2Byte_local(uint8_t* loc, uint16_t val) {
-    *loc = (uint8_t)(val & 0x00FF);
-    *(loc + 1) = (uint8_t)(val >> 8);
-}

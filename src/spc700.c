@@ -141,20 +141,6 @@ static void storeYA( uint16_t YA ) {
     A = YA & 0x00FF;
 }
 
-// TODO - consider renaming to getWord
-uint16_t getWord(uint8_t* loc) {
-    uint16_t out = loc[1];
-    out = out << 8;
-    out = out | (0x00FF & loc[0]);
-    return out;
-}
-
-// TODO - consider renaming to setWord
-void setWord( uint8_t* loc, uint16_t val ) {
-    loc[ 1 ] = (uint8_t)( ( val >> 8 ) & 0x00FF );
-    loc[ 0 ] = (uint8_t)( val & 0x00FF );
-}
-
 /* 16 bit stack pointer = 0x0100 | SP_register 
 static uint16_t get_stack_pointer() {
     uint16_t toRet = SP;
@@ -219,12 +205,12 @@ static uint8_t direct_8( uint8_t offset ) {
     return *direct( offset );
 }
 static uint16_t direct_16( uint8_t offset ) {
-    return getWord( direct( offset ) );
+    return readU16( direct( offset ) );
 }
 
 /* // TODO - Confirm that this isn't used
 static uint16_t direct_indexed_X_16() {
-    return getWord( direct( X ) );
+    return readU16( direct( X ) );
 }
 
 static uint8_t *direct_indexed_X_indirect() {
@@ -240,7 +226,7 @@ static uint8_t *indirect_y_indexed() {
 */
 
 static uint16_t absolute_addr() {
-    uint16_t word = getWord( spc_memory_map( program_counter ) );
+    uint16_t word = readU16( spc_memory_map( program_counter ) );
     program_counter += 2;
     return word;
 }
@@ -712,7 +698,7 @@ static void fsB8_SBC() {
 static void fs9A_SUBW() {
     // TODO
     uint32_t YA = (uint32_t) getYA();
-    uint32_t O1 = (uint32_t) getWord( direct( 0 ) );
+    uint32_t O1 = (uint32_t) readU16( direct( 0 ) );
 
     uint32_t result = YA - O1;
     bool overflow = ( ( YA ^ O1 ) & ( YA ^ result ) ) & 0x8000;
@@ -1157,12 +1143,12 @@ static void fs8C_DEC() {
 }
 static void fs1A_DECW() {
     uint8_t *O1 = direct( 0 );
-    uint16_t val = getWord( O1 ) - 1;
+    uint16_t val = readU16( O1 ) - 1;
     PSW = ( PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) )
         | ( ( val & 0x8000 ) ? SPC_NEGATIVE_FLAG : 0x00 )
         | ( ( val == 0 ) ? SPC_ZERO_FLAG : 0x00 );
     
-    setWord( O1, val );
+    storeU16( O1, val );
 }
 static void fsBC_INC() {
     IMPLIED_A_OP( INC );
@@ -1184,13 +1170,13 @@ static void fsAC_INC() {
 }
 static void fs3A_INCW() {
     uint8_t *O1 = direct( 0 );
-    uint16_t val = getWord( O1 );
+    uint16_t val = readU16( O1 );
     ++val;
     PSW = ( PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) )
         | ( ( val & 0x8000 ) ? SPC_NEGATIVE_FLAG : 0x00 )
         | ( ( val == 0 ) ? SPC_ZERO_FLAG : 0x00 );
     
-    setWord( O1, val );
+    storeU16( O1, val );
 }
 #pragma endregion 
 
@@ -1312,7 +1298,7 @@ static bool MOV1( bool O1, bool O2 ) {
 
 static void MOVW_YA_D( uint16_t *O1, uint8_t *O2 ) {
     // TODO - make sure this is OK
-    *O1 = getWord( O2 );
+    *O1 = readU16( O2 );
     PSW = ( PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) ) 
         | ( ( *O1 & 0x8000 ) ? SPC_NEGATIVE_FLAG : 0x00 )
         | ( ( *O1 == 0 ) ? SPC_ZERO_FLAG : 0x00 );
@@ -1451,7 +1437,7 @@ static void fsBA_MOVW() {
     DIRECT_YA_D_OP( MOVW_YA_D );
 }
 static void fsDA_MOVW() {
-    setWord( direct( 0 ), getYA() );
+    storeU16( direct( 0 ), getYA() );
 }
 
 #pragma endregion
@@ -1552,13 +1538,13 @@ static void fs3F_CALL( uint8_t *O1 ) {
     PUSH( &r );
     r = next_program_counter & 0x00FF;
     PUSH( &r );
-    next_program_counter = getWord( O1 );
+    next_program_counter = readU16( O1 );
 }
 
 static void CBNE( uint8_t* O1, uint8_t *R ) {
     if ( A == *O1 ){
         // TODO - should we be getting a word here?
-        next_program_counter = getWord( R );
+        next_program_counter = readU16( R );
         opCycles += 2;
     }
 }

@@ -11,20 +11,31 @@
 
 #include "system.h"
 
+/* TODO:
+    - Should get/set ACC,X,Y with through the getters/setters for proper endian handling
+    - Check X_FLAG usage
+    - P reg to 8 bits
+*/
 # define UNUSED(x) UNUSED_ ## x __attribute__((unused))
 
-static bool inEmulationMode = 1;
+#define CARRY_FLAG  0x1
+#define ZERO_FLAG 0x2
+#define INTERRUPT_FLAG 0x04
+#define DECIMAL_FLAG 0x08
+#define OVERFLOW_FLAG 0x40
+#define NEGATIVE_FLAG 0x80
+#define M_FLAG 0x20
+#define X_FLAG 0x10
 
-static void(*instructions[16 * 16])();
+static bool inEmulationMode = 1;
 
 static uint16_t p_register;
 
 static uint16_t accumulator;
 static uint16_t program_counter;
 static uint16_t stack_pointer;
-static uint32_t stack;
 static uint16_t data_bank_register;
-static uint16_t program_bank_register;
+static uint8_t program_bank_register;
 static uint16_t direct_page;
 static uint16_t X, Y;
 static uint8_t emulation_flag; //emulation flag, lowest bit only
@@ -33,83 +44,13 @@ static uint8_t emulation_flag; //emulation flag, lowest bit only
 static uint32_t call_stack[30];
 static uint8_t cs_counter = 0;
 
-#pragma region private_functions
+typedef struct InstructionEntry {
+    void (*operation)(void);
+    uint8_t bytes;
+    uint8_t cycles;
+} InstructionEntry;
 
-#pragma region addressing_modes
-uint8_t immediate_8();
-uint16_t immediate_16();
-
-char relative();
-short relative_long();
-
-uint16_t direct();
-uint32_t direct_indexed_x();
-uint32_t direct_indexed_y();
-uint32_t direct_indirect();
-uint32_t direct_indexed_indirect();
-uint32_t direct_indirect_indexed();
-uint32_t direct_indirect_long();
-uint32_t direct_indirect_indexed_long();
-
-uint32_t absolute();
-uint32_t absolute_indexed_x();
-uint32_t absolute_indexed_y();
-uint32_t absolute_long();
-uint32_t absolute_indexed_long();
-uint16_t absolute_indirect();
-uint32_t absolute_indirect_long();
-uint16_t absolute_indexed_indirect();
-
-uint16_t stack_relative();
-uint32_t stack_relative_indirect_indexed();
-
-uint8_t direct_8();
-uint16_t direct_16();
-uint8_t direct_indexed_x_8();
-uint16_t direct_indexed_x_16();
-
-uint8_t direct_indexed_y_8();
-uint16_t direct_indexed_y_16();
-
-uint8_t direct_indirect_8();
-uint16_t direct_indirect_16();
-uint8_t direct_indexed_indirect_8();
-uint16_t direct_indexed_indirect_16();
-
-uint8_t direct_indirect_indexed_8();
-uint16_t direct_indirect_indexed_16();
-
-uint8_t direct_indirect_long_8();
-uint16_t direct_indirect_long_16();
-
-uint8_t direct_indirect_indexed_long_8();
-uint16_t direct_indirect_indexed_long_16();
-
-uint8_t absolute_8();
-uint16_t absolute_16();
-uint8_t absolute_indexed_x_8();
-uint16_t absolute_indexed_x_16();
-uint8_t absolute_indexed_y_8();
-uint16_t absolute_indexed_y_16();
-
-uint8_t absolute_long_8();
-uint16_t absolute_long_16();
-
-uint8_t absolute_indexed_long_8();
-uint16_t absolute_indexed_long_16();
-
-uint16_t absolute_indirect_16();
-
-uint8_t stack_relative_8();
-uint16_t stack_relative_16();
-
-uint8_t stack_relative_indirect_indexed_8();
-uint16_t stack_relative_indirect_indexed_16();
-
-#pragma endregion
-
-#pragma endregion
-
+static InstructionEntry instructions[ 0x100 ];
 
 void InitialiseCpu( RomTypes romType ) {
 
@@ -125,8 +66,6 @@ void InitialiseCpu( RomTypes romType ) {
     p_register = 0x34;
     inEmulationMode = 0x01;
     emulation_flag = 0x01;
-    
-    PopulateInstructions();
 }
 
 struct execution createEx() {
@@ -142,201 +81,176 @@ struct execution createEx() {
 }
 
 uint8_t prev_instr = 0;
+
+// Used as the base address of the current operation
+uint16_t currentOperationOffset;
+uint16_t nextOperationOffset;
 void ExecuteNextInstruction() {
     static int counter = 0;
     counter++;
-    uint32_t instruction_addr = getMappedInstructionAddr( program_bank_register, program_counter );
-
-    instruction_addr &= ~0x800000;
-    uint8_t current_instruction = getRomData()[instruction_addr];
-    
-    printf( "\n%03i | %02x:\n", counter, current_instruction );
-
     if (counter == 1)
         start_comp();
-
     
     struct execution currentEx = createEx();
-    uint8_t comparison = compare(currentEx);
+    uint8_t comparison = compare( currentEx );
     if ( comparison != 0 ) {
-        printf( "Mismatch\n" );
+        // Current max score - 8544
+//        printf( "Mismatch\n" );
     }
-    prev_instr = current_instruction;
-    // Current max score - 8544
-    void(*next_instruction)() = *instructions[current_instruction];
-    next_instruction();
-}
+    MemoryAddress instructionAddress = (MemoryAddress){ program_bank_register, program_counter };
 
-void set_p_register_16(uint16_t val, uint8_t flags) {
-    if (val == 0)
-        p_register |= ZERO_FLAG & flags;
-    else
-        p_register &= ~(ZERO_FLAG & flags);
+    instructionAddress.bank &= ~0x80;
+    uint8_t currentOpcode = *snesMemoryMap( instructionAddress );
+    
+    printf( "\n%03i | %02x:\n", counter, currentOpcode );
 
-    if (val & 0x8000)
-        p_register |= NEGATIVE_FLAG & flags;
-    else
-        p_register &= ~(NEGATIVE_FLAG & flags);
+    prev_instr = currentOpcode;
+    
+    currentOperationOffset = program_counter;
+    InstructionEntry *entry = &instructions[ currentOpcode ];
+    nextOperationOffset = program_counter + entry->bytes;
 
-}
-void set_p_register_8(uint8_t val, uint8_t flags) {
-    if (val == 0)
-        p_register |= ZERO_FLAG & flags;
-    else
-        p_register &= ~(ZERO_FLAG & flags);
+    // Opcode consumed, inc PC for getting operand(s)
+    ++program_counter;
+    entry->operation();
+    program_counter = nextOperationOffset;
 
-    if (val & 0x80)
-        p_register |= NEGATIVE_FLAG & flags;
-    else
-        p_register &= ~(NEGATIVE_FLAG & flags);
-}
-int m_flag() {
-    uint8_t m_val = p_register & M_FLAG;
-    if (m_val > 0)
-        return 1;
-    else
-        return 0;
-}
-int x_flag() {
-    uint8_t x_val = p_register & X_FLAG;
-    if (x_val > 0)
-        return 1;
-    else
-        return 0;
 }
 
 #pragma region addressing_modes
 
-// TODO - bank + address could be broken into a struct
 
-uint8_t immediate_8() {
-    uint32_t mapped_addr = getMappedInstructionAddr(program_bank_register, program_counter+1);
-    uint8_t operand = (uint8_t)getRomData()[mapped_addr];//*(access_address(mapped_addr));
-    return operand;
+// Hopefully RVO kicks in for these
+static inline MemoryAddress GetBusAddressFromLong( uint32_t longAddress ) {
+    return (MemoryAddress) {
+        (uint8_t) ( longAddress >> 16 ),
+        (uint16_t) ( longAddress & 0x0000FF )
+    };
 }
 
-uint16_t immediate_16() {
-    uint32_t mapped_addr = getMappedInstructionAddr(program_bank_register, program_counter + 1);
-    uint8_t *addr = &getRomData()[mapped_addr];//access_address(mapped_addr);
-    uint16_t operand = addr[1];
-    operand = operand << 8;
-    operand = operand | addr[0];
-    return operand;
+static inline MemoryAddress GetBusAddress( uint8_t bank, uint16_t offset ) {
+    return (MemoryAddress) { bank, offset };
 }
 
-char relative() {
-    uint8_t val = immediate_8();
-    char s_val = (char)val;
-    return s_val;
+static inline MemoryAddress GetDataBankAddress( uint16_t offset ) {
+    return GetBusAddress( data_bank_register, offset );
 }
 
-short relative_long() {
-    uint16_t val = immediate_16();
-    short s_val = (short)val;
-    return s_val;
+static inline MemoryAddress GetProgramBankAddress( uint16_t offset ) {
+    return GetBusAddress( program_bank_register, offset );
 }
 
-#define GET_FULL_ADDR( offset ) ( data_bank_register << 16 ) | (uint32_t)( offset )
-
-uint8_t* direct_indirect_indexed_addr(){
-    return accessAddressFromBank( 0x00, direct_page + immediate_8() );
+static inline uint8_t* immediate() {
+    return snesMemoryMap( GetProgramBankAddress( program_counter++ ) );
 }
 
-uint16_t direct() {
-    return direct_page + immediate_8();
+static inline uint8_t immediateU8() {
+    return *immediate();
 }
 
-uint32_t direct_indexed_x() {
-    return direct_page + immediate_8() + X;
-}
-uint32_t direct_indexed_y() {
-    return direct_page + immediate_8() + Y;
-}
-
-uint32_t direct_indexed_indirect() {
-    uint8_t* indirectAddr = accessAddressFromBank( 0x00, immediate_8() + direct_page + X );
-    return GET_FULL_ADDR( get2Byte( indirectAddr ) );
+static inline uint16_t immediateU16() {
+    uint16_t val = readU16( immediate() );
+    ++program_counter;
+    return val;
 }
 
-uint32_t direct_indirect() {
-    uint8_t* indirectAddr = accessAddressFromBank( data_bank_register, direct() );
-    return GET_FULL_ADDR( get2Byte( indirectAddr ) );
-
+static inline int8_t relative() {
+    return (int8_t)*immediate();
 }
 
-uint32_t direct_indirect_long() {
-    return get3Byte( accessAddressFromBank( 0x00, direct() ) );
+static inline int16_t relativeLong() {
+    return (int16_t)immediateU16();
 }
 
-uint32_t direct_indirect_indexed() {
-    return GET_FULL_ADDR( get2Byte( direct_indirect_indexed_addr() ) + Y );
+static inline uint8_t* direct( uint16_t offset ) {
+    return snesMemoryMap( GetBusAddress( 0x00, direct_page + *immediate() + offset ) );
 }
 
-uint32_t direct_indirect_indexed_long() {
-    return get3Byte( direct_indirect_indexed_addr() ) + Y;
+static inline uint8_t* directIndexedIndirect( uint16_t indexOffset ) {
+    return snesMemoryMap( GetDataBankAddress( readU16( direct( indexOffset ) ) ) );
 }
 
-uint32_t absolute() {
-    uint16_t addr = immediate_16();
-    uint32_t system_addr = data_bank_register;
-    system_addr <<= 16;
-    system_addr |= addr;
-    return system_addr;
+static inline uint8_t* directIndirect() {
+    return directIndexedIndirect( 0 );
 }
 
-uint32_t absolute_indexed_x() {
-    uint32_t toRet = data_bank_register;
-    toRet <<= 16;
-    toRet |= direct_page + immediate_16();
-    return toRet + X;
+static inline uint8_t* directIndexedXIndirect() {
+    return directIndexedIndirect( X );
 }
 
-uint32_t absolute_indexed_y() {
-    uint32_t toRet = data_bank_register;
-    toRet <<= 16;
-    toRet |= (direct_page + immediate_16());
-    return toRet + Y;
+// Returns a host-mem pointer to the emulated indirect address
+static inline uint8_t* directIndirectLong() {
+    return snesMemoryMap( GetBusAddressFromLong( readU24( direct( 0 ) ) ) );
 }
 
-uint32_t absolute_long() {
-    uint32_t mapped_addr = getMappedInstructionAddr(program_bank_register, program_counter + 1);
-    uint8_t *addr = &getRomData()[mapped_addr];//access_address(mapped_addr);
-    uint32_t operand = addr[2];
-    operand = operand << 8;
-    operand = operand | addr[1];
-    operand = operand << 8;
-    operand = operand | addr[0];
-    return operand;
+static inline uint8_t* directIndirectIndexedY() {
+    return snesMemoryMap( GetDataBankAddress( readU16( direct( 0 ) ) + Y ) );
 }
 
-uint32_t absolute_indexed_long() {
-    return absolute_long() + X;
+static inline uint8_t* directIndirectIndexedYLong() {
+    // TODO - not sure how to handle overflow here, ie does bank increment?
+    MemoryAddress address = GetBusAddressFromLong( readU24( direct( 0 ) ) );
+    address.offset += Y;
+    address.offset |= 0x8000; // ?
+    return snesMemoryMap( address );
 }
 
-// TODO - these should be mapped
-uint16_t absolute_indirect() {
-    uint16_t operand = immediate_16();
-    uint16_t addr = get2Byte( &accessSystemRam()[ operand ] );
-    return addr;
-}
-uint32_t absolute_indirect_long() {
-    uint16_t operand = immediate_16();
-    uint32_t addr = get3Byte( &accessSystemRam()[ operand ] );
-    return addr;
-}
-uint16_t absolute_indexed_indirect() {
-    uint16_t operand = immediate_16();
-    uint16_t addr = get2Byte( &accessSystemRam()[ operand + X ] );
+static inline uint16_t absoluteAsAddr( uint16_t offset ) {
+    uint16_t addr = readU16( immediate() ) + offset;
+    ++program_counter;
     return addr;
 }
 
-uint16_t stack_relative() {
-    return stack_pointer + immediate_8();
+static inline uint8_t* absolute( uint16_t offset ) {
+    uint8_t *addr = snesMemoryMap( GetDataBankAddress( absoluteAsAddr( offset ) ) );
+    return addr;
 }
 
-uint32_t stack_relative_indirect_indexed() {
-    uint32_t new_addr = data_bank_register + stack_pointer + immediate_8() + Y;
-    return new_addr;
+static inline uint8_t* absoluteIndexedX() {
+    return absolute( X );
+}
+
+static inline uint8_t* absoluteIndexedY() {
+    return absolute( Y );
+}
+
+static inline MemoryAddress absoluteLongAsAddr( uint16_t offset ) {
+    // TODO - not sure how to handle overflow here, ie does bank increment?
+    MemoryAddress address = GetBusAddressFromLong( readU24( immediate() ) );
+    program_counter += 3;
+    address.offset += offset;
+    return address;
+}
+
+static inline uint8_t* absoluteLong( uint16_t offset ) {
+    return snesMemoryMap( absoluteLongAsAddr( offset ) );
+}
+
+static inline uint8_t* absoluteLongIndexedX() {
+    // TODO - not sure how to handle overflow here, ie does bank increment?
+    return absoluteLong( X );
+}
+
+static inline uint8_t* absoluteIndirect() {
+    uint16_t absolute = readU16( immediate() );
+    ++program_counter;
+    return snesMemoryMap( GetDataBankAddress( absolute ) );
+}
+
+static inline uint8_t* absoluteIndexedXIndirect() {
+    uint16_t absolute = readU16( immediate() );
+    ++program_counter;
+    return snesMemoryMap( GetDataBankAddress( absolute + X ) );
+}
+
+static inline uint8_t* stackRelative() {
+    // TODO - should the relative part be signed?
+    return snesMemoryMap( GetBusAddress( 0x00, stack_pointer + *immediate() ) );
+}
+
+static inline uint8_t* stackRelativeIndirectIndexedY() {
+    // TODO - verify
+    return snesMemoryMap( GetDataBankAddress( readU16( stackRelative() ) + Y ) );
 }
 
 #pragma endregion
@@ -344,1092 +258,519 @@ uint32_t stack_relative_indirect_indexed() {
 
 #pragma region INSTRUCTIONS
 
-void PopulateInstructions() {
-    instructions[0x00] = f00_BRK;
-    instructions[0x01] = f01_ORA;
-    instructions[0x02] = f02_COP;
-    instructions[0x03] = f03_ORA;
-    instructions[0x04] = f04_TSB;
-    instructions[0x05] = f05_ORA;
-    instructions[0x06] = f06_ASL;
-    instructions[0x07] = f07_ORA;
-    instructions[0x08] = f08_PHP;
-    instructions[0x09] = f09_ORA;
-    instructions[0x0A] = f0A_ASL;
-    instructions[0x0B] = f0B_PHD;
-    instructions[0x0C] = f0C_TSB;
-    instructions[0x0D] = f0D_ORA;
-    instructions[0x0E] = f0E_ASL;
-    instructions[0x0F] = f0F_ORA;
-    //
-    instructions[0x10] = f10_BPL;
-    instructions[0x11] = f11_ORA;
-    instructions[0x10] = f10_BPL;
-    instructions[0x11] = f11_ORA;
-    instructions[0x12] = f12_ORA;
-    instructions[0x13] = f13_ORA;
-    instructions[0x14] = f14_TRB;
-    instructions[0x15] = f15_ORA;
-    instructions[0x16] = f16_ASL;
-    instructions[0x17] = f17_ORA;
-    instructions[0x18] = f18_CLC;
-    instructions[0x19] = f19_ORA;
-    instructions[0x1A] = f1A_INC;
-    instructions[0x1B] = f1B_TCS;
-    instructions[0x1C] = f1C_TRB;
-    instructions[0x1D] = f1D_ORA;
-    instructions[0x1E] = f1E_ASL;
-    instructions[0x1F] = f1F_ORA;
-    //
-    instructions[0x20] = f20_JSR;
-    instructions[0x21] = f21_AND;
-    instructions[0x22] = f22_JSR;
-    instructions[0x23] = f23_AND;
-    instructions[0x24] = f24_BIT;
-    instructions[0x25] = f25_AND;
-    instructions[0x26] = f26_ROL;
-    instructions[0x27] = f27_AND;
-    instructions[0x28] = f28_PLP;
-    instructions[0x29] = f29_AND;
-    instructions[0x2A] = f2A_ROL;
-    instructions[0x2B] = f2B_PLD;
-    instructions[0x2C] = f2C_BIT;
-    instructions[0x2D] = f2D_AND;
-    instructions[0x2E] = f2E_ROL;
-    instructions[0x2F] = f2F_AND;
-    //
-    instructions[0x30] = f30_BMI;
-    instructions[0x31] = f31_AND;
-    instructions[0x32] = f32_AND;
-    instructions[0x33] = f33_AND;
-    instructions[0x34] = f34_BIT;
-    instructions[0x35] = f35_AND;
-    instructions[0x36] = f36_ROL;
-    instructions[0x37] = f37_AND;
-    instructions[0x38] = f38_SEC;
-    instructions[0x39] = f39_AND;
-    instructions[0x3A] = f3A_DEC;
-    instructions[0x3B] = f3B_TSC;
-    instructions[0x3C] = f3C_BIT;
-    instructions[0x3D] = f3D_AND;
-    instructions[0x3E] = f3E_ROL;
-    instructions[0x3F] = f3F_AND;
-    //
-    instructions[0x40] = f40_RTI;
-    instructions[0x41] = f41_EOR;
-    instructions[0x42] = f42_WDM;
-    instructions[0x43] = f43_EOR;
-    instructions[0x44] = f44_MVP;
-    instructions[0x45] = f45_EOR;
-    instructions[0x46] = f46_LSR;
-    instructions[0x47] = f47_EOR;
-    instructions[0x48] = f48_PHA;
-    instructions[0x49] = f49_EOR;
-    instructions[0x4A] = f4A_LSR;
-    instructions[0x4B] = f4B_PHK;
-    instructions[0x4C] = f4C_JMP;
-    instructions[0x4D] = f4D_EOR;
-    instructions[0x4E] = f4E_LSR;
-    instructions[0x4F] = f4F_EOR;
-    //
-    instructions[0x50] = f50_BVC;
-    instructions[0x51] = f51_EOR;
-    instructions[0x52] = f52_EOR;
-    instructions[0x53] = f53_EOR;
-    instructions[0x54] = f54_MVN;
-    instructions[0x55] = f55_EOR;
-    instructions[0x56] = f56_LSR;
-    instructions[0x57] = f57_EOR;
-    instructions[0x58] = f58_CLI;
-    instructions[0x59] = f59_EOR;
-    instructions[0x5A] = f5A_PHY;
-    instructions[0x5B] = f5B_TCD;
-    instructions[0x5C] = f5C_JMP;
-    instructions[0x5D] = f5D_EOR;
-    instructions[0x5E] = f5E_LSR;
-    instructions[0x5F] = f5F_EOR;
-    //
-    instructions[0x60] = f60_RTS;
-    instructions[0x61] = f61_ADC;
-    instructions[0x62] = f62_PER;
-    instructions[0x63] = f63_ADC;
-    instructions[0x64] = f64_STZ;
-    instructions[0x65] = f65_ADC;
-    instructions[0x66] = f66_ROR;
-    instructions[0x67] = f67_ADC;
-    instructions[0x68] = f68_PLA;
-    instructions[0x69] = f69_ADC;
-    instructions[0x6A] = f6A_ROR;
-    instructions[0x6B] = f6B_RTL;
-    instructions[0x6C] = f6C_JMP;
-    instructions[0x6D] = f6D_ADC;
-    instructions[0x6E] = f6E_ROR;
-    instructions[0x6F] = f6F_ADC;
-    //
-    instructions[0x70] = f70_BVS;
-    instructions[0x71] = f71_ADC;
-    instructions[0x72] = f72_ADC;
-    instructions[0x73] = f73_ADC;
-    instructions[0x74] = f74_STZ;
-    instructions[0x75] = f75_ADC;
-    instructions[0x76] = f76_ROR;
-    instructions[0x77] = f77_ADC;
-    instructions[0x78] = f78_SEI;
-    instructions[0x79] = f79_ADC;
-    instructions[0x7A] = f7A_PLY;
-    instructions[0x7B] = f7B_TDC;
-    instructions[0x7C] = f7C_JMP;
-    instructions[0x7D] = f7D_ADC;
-    instructions[0x7E] = f7E_ROR;
-    instructions[0x7F] = f7F_ADC;
-    //
-    instructions[0x80] = f80_BRA;
-    instructions[0x81] = f81_STA;
-    instructions[0x82] = f82_BRL;
-    instructions[0x83] = f83_STA;
-    instructions[0x84] = f84_STY;
-    instructions[0x85] = f85_STA;
-    instructions[0x86] = f86_STX;
-    instructions[0x87] = f87_STA;
-    instructions[0x88] = f88_DEY;
-    instructions[0x89] = f89_BIT;
-    instructions[0x8A] = f8A_TXA;
-    instructions[0x8B] = f8B_PHB;
-    instructions[0x8C] = f8C_STY;
-    instructions[0x8D] = f8D_STA;
-    instructions[0x8E] = f8E_STX;
-    instructions[0x8F] = f8F_STA;
-    //
-    instructions[0x90] = f90_BCC;
-    instructions[0x91] = f91_STA;
-    instructions[0x92] = f92_STA;
-    instructions[0x93] = f93_STA;
-    instructions[0x94] = f94_STY;
-    instructions[0x95] = f95_STA;
-    instructions[0x96] = f96_STX;
-    instructions[0x97] = f97_STA;
-    instructions[0x98] = f98_TYA;
-    instructions[0x99] = f99_STA;
-    instructions[0x9A] = f9A_TXS;
-    instructions[0x9B] = f9B_TXY;
-    instructions[0x9C] = f9C_STZ;
-    instructions[0x9D] = f9D_STA;
-    instructions[0x9E] = f9E_STZ;
-    instructions[0x9F] = f9F_STA;
-    //
-    instructions[0xA0] = fA0_LDY;
-    instructions[0xA1] = fA1_LDA;
-    instructions[0xA2] = fA2_LDX;
-    instructions[0xA3] = fA3_LDA;
-    instructions[0xA4] = fA4_LDY;
-    instructions[0xA5] = fA5_LDA;
-    instructions[0xA6] = fA6_LDX;
-    instructions[0xA7] = fA7_LDA;
-    instructions[0xA8] = fA8_TAY;
-    instructions[0xA9] = fA9_LDA;
-    instructions[0xAA] = fAA_TAX;
-    instructions[0xAB] = fAB_PLB;
-    instructions[0xAC] = fAC_LDY;
-    instructions[0xAD] = fAD_LDA;
-    instructions[0xAE] = fAE_LDX;
-    instructions[0xAF] = fAF_LDA;
-    //
-    instructions[0xB0] = fB0_BCs;
-    instructions[0xB1] = fB1_LDA;
-    instructions[0xB2] = fB2_LDA;
-    instructions[0xB3] = fB3_LDA;
-    instructions[0xB4] = fB4_LDY;
-    instructions[0xB5] = fB5_LDA;
-    instructions[0xB6] = fB6_LDX;
-    instructions[0xB7] = fB7_LDA;
-    instructions[0xB8] = fB8_CLV;
-    instructions[0xB9] = fB9_LDA;
-    instructions[0xBA] = fBA_TSX;
-    instructions[0xBB] = fBB_TYX;
-    instructions[0xBC] = fBC_LDY;
-    instructions[0xBD] = fBD_LDA;
-    instructions[0xBE] = fBE_LDX;
-    instructions[0xBF] = fBF_LDA;
-    //
-    instructions[0xC0] = fC0_CPY;
-    instructions[0xC1] = fC1_CMP;
-    instructions[0xC2] = fC2_REP;
-    instructions[0xC3] = fC3_CMP;
-    instructions[0xC4] = fC4_CPY;
-    instructions[0xC5] = fC5_CMP;
-    instructions[0xC6] = fC6_DEC;
-    instructions[0xC7] = fC7_CMP;
-    instructions[0xC8] = fC8_INY;
-    instructions[0xC9] = fC9_CMP;
-    instructions[0xCA] = fCA_DEX;
-    instructions[0xCB] = fCB_WAI;
-    instructions[0xCC] = fCC_CPY;
-    instructions[0xCD] = fCD_CMP;
-    instructions[0xCE] = fCE_DEC;
-    instructions[0xCF] = fCF_CMP;
-    //
-    instructions[0xD0] = fD0_BNE;
-    instructions[0xD1] = fD1_CMP;
-    instructions[0xD2] = fD2_CMP;
-    instructions[0xD3] = fD3_CMP;
-    instructions[0xD4] = fD4_PEI;
-    instructions[0xD5] = fD5_CMP;
-    instructions[0xD6] = fD6_DEC;
-    instructions[0xD7] = fD7_CMP;
-    instructions[0xD8] = fD8_CLD;
-    instructions[0xD9] = fD9_CMP;
-    instructions[0xDA] = fDA_PHX;
-    instructions[0xDB] = fDB_STP;
-    instructions[0xDC] = fDC_JMP;
-    instructions[0xDD] = fDD_CMP;
-    instructions[0xDE] = fDE_DEC;
-    instructions[0xDF] = fDF_CMP;
-    //
-    instructions[0xE0] = fE0_CPX;
-    instructions[0xE1] = fE1_SBC;
-    instructions[0xE2] = fE2_SEP;
-    instructions[0xE3] = fE3_SBC;
-    instructions[0xE4] = fE4_CPX;
-    instructions[0xE5] = fE5_SBC;
-    instructions[0xE6] = fE6_INC;
-    instructions[0xE7] = fE7_SBC;
-    instructions[0xE8] = fE8_INX;
-    instructions[0xE9] = fE9_SBC;
-    instructions[0xEA] = fEA_NOP;
-    instructions[0xEB] = fEB_XBA;
-    instructions[0xEC] = fEC_CPX;
-    instructions[0xED] = fED_SBC;
-    instructions[0xEE] = fEE_INC;
-    instructions[0xEF] = fEF_SBC;
-    //
-    instructions[0xF0] = fF0_BEQ;
-    instructions[0xF1] = fF1_SBC;
-    instructions[0xF2] = fF2_SBC;
-    instructions[0xF3] = fF3_SBC;
-    instructions[0xF4] = fF4_PEA;
-    instructions[0xF5] = fF5_SBC;
-    instructions[0xF6] = fF6_INC;
-    instructions[0xF7] = fF7_SBC;
-    instructions[0xF8] = fF8_SED;
-    instructions[0xF9] = fF9_SBC;
-    instructions[0xFA] = fFA_PLX;
-    instructions[0xFB] = fFB_XCE;
-    instructions[0xFC] = fFC_JSR;
-    instructions[0xFD] = fFD_SBC;
-    instructions[0xFE] = fFE_INC;
-    instructions[0xFF] = fFF_SBC;
-    //
+#pragma region stack_access
+// TODO - stack accessors should handle emulation mode
 
+static inline void pushU8( uint8_t val ) {
+    *snesMemoryMap( GetBusAddress( 0x00, stack_pointer-- ) ) = val;
 }
 
-// TODO - These addressing modes really need standardising, like the SPC
-#pragma region data_access
-
-uint8_t direct_8() {
-    return *accessAddressFromBank( 0x00, direct() );
+static inline void pushU16( uint16_t val ) {
+    pushU8( (uint8_t)( ( val >> 8 ) & 0x00FF ) );
+    pushU8( (uint8_t)( val & 0x00FF ) );
 }
-uint16_t direct_16() {
-    return get2Byte( accessAddressFromBank( 0x00, direct() ) );
-}
-
-uint8_t direct_indexed_x_8() {
-    return *access_address( direct_indexed_x() );
-}
-uint16_t direct_indexed_x_16() {
-    return get2Byte( access_address( direct_indexed_x() ) );
+ 
+static inline uint8_t popU8() {
+    return *snesMemoryMap( GetBusAddress( 0x00, ++stack_pointer ) );
 }
 
-uint8_t direct_indexed_y_8() {
-    return *access_address( direct_indexed_y() );
+static inline uint16_t popU16() {
+    uint16_t val = (uint16_t) popU8();
+    val |= ( (uint16_t) popU8() ) << 8;
+    return val;
 }
-uint16_t direct_indexed_y_16() {
-    return get2Byte( access_address( direct_indexed_y() ) );
-}
+ 
+ #pragma endregion
+ 
+ #pragma region ADC
+ int BCD_ADD_NYBBLE(uint8_t *reg, uint8_t toAdd) {
+     uint8_t reg_val = *reg;
+     uint8_t added = reg_val + toAdd;
+     uint8_t carry = added & 0x10;
+     if (added > 9) {
+         carry = 1;
+         added += 0x06;
+     }
+     added &= 0x0F;
+     *reg = added;
+     return carry;
+ }
+ 
+ 
+ static inline void ADC( uint8_t *O1 ) {
+     // TODO - rewrite all this
+     bool decimal = ( p_register & DECIMAL_FLAG );
+     bool op8 = ( p_register & M_FLAG );
 
-uint8_t direct_indirect_8() {
-    return *access_address( direct_indirect () );;
-}
-uint16_t direct_indirect_16() {
-    return get2Byte( access_address( direct_indirect() ) );
-}
+     uint16_t zero = 0x00;
+     uint16_t carry = 0x00;
+     uint16_t negative = 0x00;
+     uint16_t overflow = 0x00;
 
-uint8_t direct_indexed_indirect_8() {
-    return *access_address( direct_indexed_indirect() );
-}
-uint16_t direct_indexed_indirect_16() {
-    return get2Byte( access_address( direct_indexed_indirect() ) );
-}
+     if ( op8 ){
+         uint8_t a = accumulator, b, r;
+         if ( decimal ) {
+             uint8_t carryVal = ( p_register & CARRY_FLAG ) ? 0x01 : 0x00;
+             uint16_t sum = 0;
+             for ( int i = 0; i < 2; ++i ) {
+                 uint8_t reg = ( accumulator & ( 0x000F << ( i * 4 ) ) ) >> ( i * 4 );
+                 uint8_t toAddy = ( *O1 & ( 0x000F << ( i * 4 ) ) ) >> ( i * 4 );
+                 carryVal = BCD_ADD_NYBBLE( &reg, toAddy + carryVal );
+                 sum |= reg << ( i * 4 );
+             }
+             a = b = accumulator;
+             r = accumulator = sum;
+             carry = carryVal ? CARRY_FLAG : carry;
+         }
+         else {
+             const uint16_t rhs16 = (uint16_t) ( *O1 );
+             const uint16_t lhs16 = rhs16 + ( ( CARRY_FLAG & p_register ) ? 0x01 : 0x00 ) + ( accumulator & 0x00ff );
+             b = *O1;
+             if ( lhs16 & 0xFF00 )    //Check for carry            
+                 carry = CARRY_FLAG;
 
-uint8_t direct_indirect_indexed_8() {
-    return *access_address( direct_indirect_indexed() );
-}
-uint16_t direct_indirect_indexed_16() {
-    return get2Byte( access_address( direct_indirect_indexed() ) );
-}
+             accumulator &= 0xff00;// lhs16; // accumulator + toAdd + (CARRY_FLAG & p_register);
+             accumulator |= ( lhs16 & 0x00ff );
+             r = accumulator;
+         }
+         
+         zero = ( ( accumulator & 0x00FF ) == 0 ) ? ZERO_FLAG : zero;
+         negative = ( accumulator & 0x0080 ) ? NEGATIVE_FLAG : negative;
+         if ( ( ( a & 0x80 ) == ( b & 0x80 ) ) && ( ( r & 0x80 ) != ( a & 0x80 ) ) ) {
+             overflow = OVERFLOW_FLAG;
+         }
+     }
+ 
+     else {
+         //--------------------------------------------------------------------------
+         uint8_t d_on = p_register & DECIMAL_FLAG;
+         uint16_t a = accumulator, b, r;
+         uint16_t toAdd = readU16( O1 );
+         if (d_on > 0) {
+             uint8_t carryVal = p_register & CARRY_FLAG;
+             uint16_t sum = 0;
+             for (int i = 0; i < 4; i++) {
+                 uint8_t reg = (accumulator & (0x000F << (i * 4))) >> i * 4;
+                 uint8_t toAddy = (toAdd & (0x000F << (i * 4))) >> i * 4;
+                 carryVal = BCD_ADD_NYBBLE(&reg, toAddy + carryVal);
+                 uint16_t val = reg;
+                 val <<= i * 4;
+                 sum |= val;
+             }
+             a = b = accumulator;
+             r = accumulator = sum;
+             //set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+             if ( carryVal )
+                 carry = CARRY_FLAG;
 
-uint8_t direct_indirect_long_8() {
-    return *access_address( direct_indirect_long() );;
-}
-uint16_t direct_indirect_long_16() {
-    return get2Byte( access_address( direct_indirect_long() ) );
-}
+         }
+         else {
+             b = toAdd;
+             accumulator = accumulator + toAdd + (1 & p_register);
+             r = accumulator;
+         }
+         if(((a & 0x8000) == (b & 0x8000)) && ((r & 0x8000) != (a & 0x8000)))
+             overflow = OVERFLOW_FLAG;
+         zero = ( accumulator == 0 ) ? ZERO_FLAG : zero;
+         negative = ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : negative;
+ 
+         //set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+     }
 
-uint8_t direct_indirect_indexed_long_8() {
-    return *access_address( direct_indirect_indexed_long() );
-}
-uint16_t direct_indirect_indexed_long_16() {
-    return get2Byte( access_address( direct_indirect_indexed_long() ) );
-}
-
-uint8_t absolute_8() {
-    uint32_t new_addr = absolute();
-    return *access_address( new_addr );
-}
-uint16_t absolute_16() {
-    return get2Byte( access_address( absolute() ) );
-}
-
-uint8_t absolute_indexed_x_8() {
-    uint32_t new_addr = absolute_indexed_x();
-    uint8_t data = (uint8_t)*access_address(new_addr);
-    return data;
-}
-uint16_t absolute_indexed_x_16() {
-    uint32_t new_addr = absolute_indexed_x();
-    uint16_t data = get2Byte(access_address(new_addr));
-    return data;
-}
-
-uint8_t absolute_indexed_y_8() {
-    uint32_t new_addr = absolute_indexed_y();
-    uint8_t data = (uint8_t)*access_address(new_addr);
-    return data;
-}
-uint16_t absolute_indexed_y_16() {
-    uint32_t new_addr = absolute_indexed_y();
-    uint16_t data = get2Byte(access_address(new_addr));
-    return data;
-}
-
-uint8_t absolute_long_8() {
-    uint32_t new_addr = absolute_long();
-    uint8_t data = (uint8_t)*access_address(new_addr);
-    return data;
-}
-uint16_t absolute_long_16() {
-    uint32_t new_addr = absolute_long();
-    uint16_t data = get2Byte(access_address(new_addr));
-    return data;
-}
-uint16_t absolute_long_32() {
-    uint32_t new_addr = absolute_long();
-    uint32_t data = get3Byte(access_address(new_addr));
-    return data;
-}
-uint8_t absolute_indexed_long_8() {
-    uint32_t new_addr = absolute_indexed_long();
-    uint8_t data = (uint8_t)*access_address(new_addr);
-    return data;
-}
-uint16_t absolute_indexed_long_16() {
-    uint32_t new_addr = absolute_indexed_long();
-    uint16_t data = get2Byte(access_address(new_addr));
-    return data;
-}
-
-uint16_t absolute_indirect_16() {
-    return get2Byte( access_address( absolute_indirect() ) );
-}
-
-uint32_t absolute_indirect_long_32() {
-    return 0; // TODO
-}
-
-
-uint16_t absolute_indexed_indirect_16(){
-    const uint32_t pLoc = absolute_indexed_x();
-    return get2Byte(access_address(pLoc));
-}
-
-uint8_t stack_relative_8() {
-    uint16_t stack_addr = stack_relative();
-    uint8_t data = accessSystemRam()[stack_addr];
-    return data;
-}
-uint16_t stack_relative_16() {
-    uint16_t stack_addr = stack_relative();
-    uint16_t data = get2Byte(access_address(stack_addr));
-    return data;
-}
-
-uint8_t stack_relative_indirect_indexed_8() {
-    uint32_t new_addr = stack_relative_indirect_indexed();
-    uint8_t data = (uint8_t)*access_address(new_addr);
-    return data;
-}
-uint16_t stack_relative_indirect_indexed_16(){
-    uint32_t new_addr = stack_relative_indirect_indexed();
-    uint16_t data = get2Byte(access_address(new_addr));
-    return data;
-}
-
-void push_to_stack_8( uint8_t val ) {
-    uint8_t *local_pointer = accessAddressFromBank( 0x00, stack );
-    *local_pointer = val;
-    stack_pointer -= 1;
-    stack -= 1;
-}
-
-void push_to_stack_32( uint32_t val ) {
-    store4Byte( stack_pointer, val );
-    stack_pointer -= 4;
-    stack -= 4;
-}
-
-void push_to_stack_16( uint16_t val ) {
-    uint8_t low_byte = (uint8_t) val;
-    uint8_t high_byte = val >> 8;
-    push_to_stack_8( high_byte );
-    push_to_stack_8( low_byte );
-}
-
-
-uint8_t pull_from_stack_8() {
-    stack += 1;
-    uint8_t *local_pointer = access_address( stack );
-    stack_pointer += 1;
-    return *local_pointer;
-}
-
-uint32_t pull_from_stack_32() {
-    uint8_t* local_pointer = access_address( stack );
-    stack_pointer += 4;
-    return get4Byte( local_pointer );
-}
-
-uint16_t pull_from_stack_16() {
-    uint8_t low_byte = pull_from_stack_8();
-    uint8_t high_byte = pull_from_stack_8();
-    uint16_t ret = high_byte;
-    ret <<= 8;
-    ret |= low_byte;
-    return ret;
-}
-
-
-
-#pragma endregion
-
-#pragma region ADC
-int BCD_ADD_NYBBLE(uint8_t *reg, uint8_t toAdd) {
-    uint8_t reg_val = *reg;
-    uint8_t added = reg_val + toAdd;
-    uint8_t carry = added & 0x10;
-    if (added > 9) {
-        carry = 1;
-        added += 0x06;
+      p_register = ( p_register & ~( NEGATIVE_FLAG | CARRY_FLAG | ZERO_FLAG | OVERFLOW_FLAG ) )
+            | negative | zero | carry | overflow;
+ }
+ 
+ //ADC(_dp_, X)    61    DP Indexed Indirect, X    NV� - ZC    2
+ void f61_ADC(){
+     ADC( directIndexedXIndirect() );
+     ++program_counter;
+ }
+ 
+ //ADC sr, S    63    Stack Relative    NV� - ZC    2
+ void f63_ADC(){
+     ADC( stackRelative() );
+     ++program_counter;
+ }
+ 
+ //ADC dp    65    Direct Page    NV� - ZC    2
+ void f65_ADC(){
+     ADC( direct( 0 ) );
+     ++program_counter;
+ }
+ 
+ //ADC[_dp_]    67    DP Indirect Long    NV� - ZC    2
+ void f67_ADC(){
+     ADC( directIndirectLong() );
+     ++program_counter;
+ }
+ 
+ //ADC #const    69    Immediate    NV� - ZC    2/3
+ void f69_ADC(){
+     // TODO - maybe immediateMFlag() or something?
+    if ( !( p_register & M_FLAG ) ) {
+        ++nextOperationOffset;
     }
-    added &= 0x0F;
-    *reg = added;
-    return carry;
+     ADC( immediate() );
+ }
+ 
+ //ADC addr    6D    Absolute    NV� - ZC    3
+ void f6D_ADC(){
+     ADC( absolute( 0 ) );
+     ++program_counter;
+ }
+ 
+ //ADC long    6F    Absolute Long    NV� - ZC    4
+ void f6F_ADC(){
+     ADC( absoluteLong( 0 ) );
+     ++program_counter;
+ }
+ 
+ //ADC(dp), Y    71    DP Indirect Indexed, Y    NV� - ZC    2
+ void f71_ADC(){
+     ADC( directIndirectIndexedY() );
+     ++program_counter;
+ }
+ 
+  //ADC(_dp_)    72    DP Indirect    NV� - ZC    2
+ void f72_ADC(){
+     ADC( directIndirect() );
+    ++program_counter;
 }
 
-void ADC_8(uint8_t toAdd) {
-    uint8_t d_on = p_register & DECIMAL_FLAG;
-    uint8_t a = accumulator, b, r;
-    if (d_on > 0) {
-        uint8_t carry = p_register & CARRY_FLAG;
-        uint16_t sum = 0;
-        for (int i = 0; i < 2; i++) {
-            uint8_t reg = (accumulator & (0x000F << (i * 4))) >> i * 4;
-            uint8_t toAddy = (toAdd & (0x000F << (i * 4))) >> i * 4;
-            carry = BCD_ADD_NYBBLE(&reg, toAddy + carry);
-            uint16_t val = reg;
-            val <<= i * 4;
-            sum |= val;
-        }
-        a = b = accumulator;
-        r = accumulator = sum;
-        set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-        if (carry)
-            p_register |= CARRY_FLAG;
-        else
-            p_register &= ~CARRY_FLAG;
-    }
-    else {
-        const uint16_t rhs16 = (uint16_t)toAdd;
-        const uint16_t lhs16 = rhs16 + (CARRY_FLAG & p_register) + (accumulator & 0x00ff);
-        b = toAdd;
-        if (lhs16 & 0xFF00)    //Check for carry            
-            p_register |= CARRY_FLAG;
-        else
-            p_register &= ~CARRY_FLAG;
-        accumulator &= 0xff00;// lhs16; // accumulator + toAdd + (CARRY_FLAG & p_register);
-        accumulator |= (lhs16 & 0x00ff);
-        r = accumulator;
-    }
-    if (((a & 0x80) == (b & 0x80)) && ((r & 0x80) != (a & 0x80)))
-        p_register |= OVERFLOW_FLAG;
-    else
-        p_register &= ~OVERFLOW_FLAG;
-
-    set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-}
-void ADC_16(uint16_t toAdd) {
-    uint8_t d_on = p_register & DECIMAL_FLAG;
-    uint16_t a = accumulator, b, r;
-    if (d_on > 0) {
-        uint8_t carry = p_register & CARRY_FLAG;
-        uint16_t sum = 0;
-        for (int i = 0; i < 4; i++) {
-            uint8_t reg = (accumulator & (0x000F << (i * 4))) >> i * 4;
-            uint8_t toAddy = (toAdd & (0x000F << (i * 4))) >> i * 4;
-            carry = BCD_ADD_NYBBLE(&reg, toAddy + carry);
-            uint16_t val = reg;
-            val <<= i * 4;
-            sum |= val;
-        }
-        a = b = accumulator;
-        r = accumulator = sum;
-        set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-        if (carry)
-            p_register |= CARRY_FLAG;
-        else
-            p_register &= ~CARRY_FLAG;
-    }
-    else {
-        b = toAdd;
-        accumulator = accumulator + toAdd + (1 & p_register);
-        r = accumulator;
-    }
-    if(((a & 0x8000) == (b & 0x8000)) && ((r & 0x8000) != (a & 0x8000)))
-        p_register |= OVERFLOW_FLAG;
-    else
-        p_register &= ~OVERFLOW_FLAG;
-
-    set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-}
-//ADC(_dp_, X)    61    DP Indexed Indirect, X    NV� - ZC    2
-void f61_ADC(){
-    if (m_flag() == 0) {
-        ADC_16(direct_indexed_indirect_16());
-    }
-    else {
-        ADC_16(direct_indexed_indirect_8());
-    }
-    program_counter += 2;
-}
-
-//ADC sr, S    63    Stack Relative    NV� - ZC    2
-void f63_ADC(){
-    if (m_flag() == 0) {
-        ADC_16(stack_relative_16());
-    }
-    else {
-        ADC_16(stack_relative_8());
-    }
-    program_counter += 2;
-}
-
-//ADC dp    65    Direct Page    NV� - ZC    2
-void f65_ADC(){
-    if (m_flag() == 0) {
-        ADC_16(direct_16());
-    }
-    else {
-        ADC_8(direct_8());
-    }
-    program_counter += 2;
-}
-
-//ADC[_dp_]    67    DP Indirect Long    NV� - ZC    2
-void f67_ADC(){
-    if (m_flag() == 0) {
-        ADC_16(direct_indirect_long_16());
-    }
-    else {
-        ADC_8(direct_indirect_long_8());
-    }
-    program_counter += 3;
-}
-
-//ADC #const    69    Immediate    NV� - ZC    23
-void f69_ADC(){
-    if (m_flag() == 0) {
-        ADC_16(immediate_16());
-        program_counter += 3;
-    }
-    else {
-        ADC_8(immediate_8());
-        program_counter += 2;
-    }
-}
-
-//ADC addr    6D    Absolute    NV� - ZC    3
-void f6D_ADC(){
-    if (m_flag() == 0) {
-        ADC_16(absolute_16());
-    }
-    else {
-        ADC_8(absolute_8());
-    }
-    program_counter += 3;
-}
-
-//ADC long    6F    Absolute Long    NV� - ZC    4
-void f6F_ADC(){
-    if (m_flag() == 0) {
-        ADC_16(absolute_long_16());
-    }
-    else {
-        ADC_8(absolute_long_8());
-    }
-    program_counter += 4;
-}
-
-//ADC(dp), Y    71    DP Indirect Indexed, Y    NV� - ZC    2
-void f71_ADC(){
-    if (m_flag() == 0) {
-        ADC_16(direct_indexed_indirect_16());
-    }
-    else {
-        ADC_8(direct_indexed_indirect_8());
-    }
-    program_counter += 2;
-}
-
-//ADC(_dp_)    72    DP Indirect    NV� - ZC    2
-void f72_ADC(){
-    if (m_flag() == 0) {
-        ADC_16(direct_indirect_16());
-    }
-    else {
-        ADC_8(direct_indirect_8());
-    }
-    program_counter += 2;
-}
-
-//ADC(_sr_, S), Y    73    SR Indirect Indexed, Y    NV� - ZC    2
+ //ADC(_sr_, S), Y    73    SR Indirect Indexed, Y    NV� - ZC    2
 void f73_ADC(){
-    if (m_flag() == 0) {
-        ADC_16(stack_relative_indirect_indexed_16());
-    }
-    else {
-        ADC_8(stack_relative_indirect_indexed_8());
-    }
-    program_counter += 2;
+    ADC( stackRelativeIndirectIndexedY() );
+    ++program_counter;
 }
 
-//ADC dp, X    75    DP Indexed, X    NV� - ZC    2
+ //ADC dp, X    75    DP Indexed, X    NV� - ZC    2
 void f75_ADC(){
-    if (m_flag() == 0) {
-        ADC_16(direct_indexed_x_16());
-    }
-    else {
-        ADC_8(direct_indexed_x_8());
-    }
-    program_counter += 2;
+    ADC( direct( X ) );
+    ++program_counter;
 }
 
-//ADC[_dp_], Y    77    DP Indirect Long Indexed, Y    NV� - ZC    2
+ //ADC[_dp_], Y    77    DP Indirect Long Indexed, Y    NV� - ZC    2
 void f77_ADC(){
-    if (m_flag() == 0) {
-        ADC_16(direct_indirect_indexed_long_16());
-    }
-    else {
-        ADC_8(direct_indirect_indexed_long_8());
-    }
-    program_counter += 2;
+    // TODO - verify
+    ADC( directIndirectIndexedYLong() );
+    ++program_counter;
 }
 
-//ADC addr, Y    79    Absolute Indexed, Y    NV� - ZC    3
+ //ADC addr, Y    79    Absolute Indexed, Y    NV� - ZC    3
 void f79_ADC(){
-    if (m_flag() == 0) {
-        ADC_16(absolute_indexed_y_16());
-    }
-    else {
-        ADC_8(absolute_indexed_y_8());
-    }
-    program_counter += 3;
+    ADC( absoluteIndexedY() );
+    ++program_counter;
 }
 
-//ADC addr, X    7D    Absolute Indexed, X    NV� - ZC    3
+ //ADC addr, X    7D    Absolute Indexed, X    NV� - ZC    3
 void f7D_ADC(){
-    if (m_flag() == 0) {
-        ADC_16(absolute_indexed_x_16());
-    }
-    else {
-        ADC_8(absolute_indexed_x_8());
-    }
-    program_counter += 3;
+    ADC( absoluteIndexedX() );
+    ++program_counter;
 }
 
-//ADC long, X    7F    Absolute Long Indexed, X    NV� - ZC    4
+ //ADC long, X    7F    Absolute Long Indexed, X    NV� - ZC    4
 void f7F_ADC(){
-    if (m_flag() == 0) {
-        ADC_16(absolute_indexed_long_16());
-    }
-    else {
-        ADC_8(absolute_indexed_long_8());
-    }
-    program_counter += 4;
+    ADC( absoluteLongIndexedX() );
+    ++program_counter;
 }
 
 #pragma endregion
 
 #pragma region AND
-void AND_8(uint8_t val) {
-    uint16_t val2 = val;
-    accumulator &= (0xFF00 | val2);
-    set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+static inline void AND( uint8_t *O1 ) {
+    uint16_t negative = 0x00;
+    uint16_t zero = 0x00;
+    if ( p_register & M_FLAG ){
+        accumulator = ( accumulator & 0XFF00 ) | ( accumulator & *O1 );
+        negative = ( accumulator & 0x0080 ) ? NEGATIVE_FLAG : negative;
+        zero = ( ( accumulator & 0x00FF ) == 0 ) ? ZERO_FLAG : zero;
+    }
+    else{
+        accumulator &= readU16( O1 );
+        negative = ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : negative;
+        zero = ( accumulator == 0 ) ? ZERO_FLAG : zero;
+    }
+
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG ) )
+        | zero | negative;
 }
 
-void AND_16(uint16_t val) {
-    accumulator &= val;
-    set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-}
-
-//AND(_dp, _X)    21    DP Indexed Indirect, X    N��Z - 2
+ //AND(_dp, _X)    21    DP Indexed Indirect, X    N��Z - 2
 void f21_AND(){
-    uint8_t data = direct_indexed_indirect_8();
-    AND_8(data);
-    program_counter += 2;
+    AND( directIndexedXIndirect() );
 }
 
-//AND sr, S    23    Stack Relative    N��Z - 2
+ //AND sr, S    23    Stack Relative    N��Z - 2
 void f23_AND(){
-    uint8_t data = stack_relative_8();
-    AND_8(data);
-    program_counter += 2;
+    AND( stackRelative() );
 }
 
-//AND dp    25    Direct Page    N��Z - 2
+////AND dp    25    Direct Page    N��Z - 2
 void f25_AND(){
-    uint8_t data = direct_8();
-    AND_8(data);
-    program_counter += 2;
+    AND( direct( 0 ) );
 }
 
-//AND[_dp_]    27    DP Indirect Long    N��Z - 2
+////AND[_dp_]    27    DP Indirect Long    N��Z - 2
 void f27_AND(){
-    uint8_t data = direct_indirect_long_8();
-    AND_8(data);
-    program_counter += 2;
+    AND( directIndirectLong() );
 }
 
-//AND #const    29    Immediate    N��Z - 2
+////AND #const    29    Immediate    N��Z - 2
 void f29_AND(){
-    if (m_flag() == 0) {
-        uint16_t data = immediate_16();
-        AND_16(data);
-        program_counter += 3;
+    if ( !( p_register & M_FLAG ) ) {
+        ++nextOperationOffset;
     }
-    else {
-        uint8_t data = immediate_8();
-        AND_8(data);
-        program_counter += 2;
-    }
-    
+    AND( immediate() );
 }
 
-//AND addr    2D    Absolute    N��Z - 3
+////AND addr    2D    Absolute    N��Z - 3
 void f2D_AND(){
-    uint8_t data = absolute_8();
-    AND_8(data);
-    program_counter += 3;
+    AND( absolute( 0 ) );
 }
 
-//AND long    2F    Absolute Long    N��Z - 4
+////AND long    2F    Absolute Long    N��Z - 4
 void f2F_AND(){
-    uint8_t data = absolute_long_8();
-    AND_8(data);
-    program_counter += 4;
+    AND( absoluteLong( 0 ) );
 }
 
-//AND(_dp_), Y    31    DP Indirect Indexed, Y    N��Z - 2
+////AND(_dp_), Y    31    DP Indirect Indexed, Y    N��Z - 2
 void f31_AND(){
-    uint8_t data = direct_indirect_indexed_8();
-    AND_8(data);
-    program_counter += 2;
+    AND( directIndirectIndexedY( 0 ) );
 }
 
-//AND(_dp_)    32    DP Indirect    N��Z - 2
+////AND(_dp_)    32    DP Indirect    N��Z - 2
 void f32_AND(){
-    uint8_t data = direct_indirect_8();
-    AND_8(data);
-    program_counter += 2;
+    AND( directIndirect() );
 }
 
-//AND(_sr_, S), Y    33    SR Indirect Indexed, Y    N��Z - 2
+////AND(_sr_, S), Y    33    SR Indirect Indexed, Y    N��Z - 2
 void f33_AND(){
-    uint8_t data = stack_relative_indirect_indexed_8();
-    AND_8(data);
-    program_counter += 2;
+    AND( stackRelativeIndirectIndexedY() );
 }
 
-//AND dp, X    35    DP Indexed, X    N��Z - 2
+////AND dp, X    35    DP Indexed, X    N��Z - 2
 void f35_AND(){
-    uint8_t data = direct_indexed_x_8();
-    AND_8(data);
-    program_counter += 2;
+    AND( direct( X ) );
 }
 
-//AND[_dp_], Y    37    DP Indirect Long Indexed, Y    N��Z - 2
+////AND[_dp_], Y    37    DP Indirect Long Indexed, Y    N��Z - 2
 void f37_AND(){
-    uint8_t data = direct_indirect_indexed_long_8();
-    AND_8(data);
-    program_counter += 2;
+    AND( directIndirectIndexedYLong() );
 }
 
-//AND addr, Y    39    Absolute Indexed, Y    N��Z - 3
+////AND addr, Y    39    Absolute Indexed, Y    N��Z - 3
 void f39_AND(){
-    uint8_t data = absolute_indexed_y_8();
-    AND_8(data);
-    program_counter += 3;
+    AND( absoluteIndexedY() );
 }
 
-//AND addr, X    3D    Absolute Indexed, X    N��Z - 3
+////AND addr, X    3D    Absolute Indexed, X    N��Z - 3
 void f3D_AND(){
-    uint8_t data = absolute_indexed_x();
-    AND_8(data);
-    program_counter += 3;
+    AND( absoluteIndexedX() );
 }
 
-//AND long, X    3F    Absolute Long Indexed, X    N��Z - 4
+////AND long, X    3F    Absolute Long Indexed, X    N��Z - 4
 void f3F_AND(){
-    uint8_t data = absolute_indexed_long_8();
-    AND_8(data);
-    program_counter += 4;
+    AND( absoluteLongIndexedX() );
 }
 
 #pragma endregion
 
 #pragma region ASL
-void ASL_8(uint8_t *loc) {
-    *loc = *loc << 1;
+
+void ASL( uint8_t *O1 ){
+    uint16_t negative = 0x00;
+    uint16_t zero = 0x00;
+    uint16_t carry = 0x00;
+
+    if ( p_register & M_FLAG ) {
+        carry = *O1 & 0x80;
+        *O1 = ( *O1 << 1 ) & 0xFE;
+        zero = ( *O1 == 0 ) ? ZERO_FLAG : zero;
+        negative = ( *O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
+    }
+    else {
+        uint16_t val = readU16( O1 );
+        carry = val & 0x8000;
+        val = val << 1;
+        zero = ( val == 0 ) ? ZERO_FLAG : zero;
+        negative = ( val & 0x8000 ) ? NEGATIVE_FLAG : negative;
+        storeU16( O1, val );
+    }
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG | CARRY_FLAG ) )
+        | negative | zero | carry;
 }
 
-void ASL_16(uint8_t *loc){
-    uint16_t val = get2Byte(loc);
-    val = val << 1;
-    *loc = (uint8_t)(val & 0x00FF);
-    *(loc + 1) = (uint8_t)((val >> 8) & 0x00FF);
 
-}
-//ASL dp    6    Direct Page    N��ZC    2
+////ASL dp    6    Direct Page    N��ZC    2
 void f06_ASL(){
-    uint16_t new_addr = direct();
-    ASL_8(accessAddressFromBank(data_bank_register >> 16, new_addr));
-    program_counter += 2;
+    ASL( direct( 0 ) );
 }
 
-//ASL A    0A    Accumulator    N��ZC    1
+////ASL A    0A    Accumulator    N��ZC    1
 void f0A_ASL(){
-    accumulator = accumulator << 1;
-    program_counter += 1;
+    ASL( (uint8_t*)&accumulator );
 }
 
-//ASL addr    0E    Absolute    N��ZC    3
+////ASL addr    0E    Absolute    N��ZC    3
 void f0E_ASL(){
-    uint32_t new_addr = absolute();
-    ASL_8(access_address(new_addr));
-    program_counter += 3;
+    ASL( absolute( 0 ) );
 }
 
-//ASL dp, X    16    DP Indexed, X    N��ZC    2
+////ASL dp, X    16    DP Indexed, X    N��ZC    2
 void f16_ASL(){
-    uint32_t new_addr = direct_indexed_x();
-    ASL_8(access_address(new_addr));
-    program_counter += 2;
+    ASL( direct( X ) );
 }
 
-//ASL addr, X    1E    Absolute Indexed, X    N��ZC    3
+////ASL addr, X    1E    Absolute Indexed, X    N��ZC    3
 void f1E_ASL(){
-    uint16_t new_addr = absolute_indexed_x();
-    ASL_8(accessAddressFromBank(data_bank_register >> 16, new_addr));
-    program_counter += 3;
+    ASL( absoluteIndexedX() );
 }
 #pragma endregion
 
-//BCC nearlabel    90    Program Counter Relative        2
+static inline void BranchRelativeOnCondition( bool condition ) {
+    int8_t offset = (int8_t) *immediate();
+    if ( condition ){
+        nextOperationOffset += offset;
+    }
+}
+
+////BCC nearlabel    90    Program Counter Relative        2
 void f90_BCC(){
-    if (CARRY_FLAG & p_register)
-        program_counter += 2;
-    else {
-        char adjust = (char) immediate_8();
-        program_counter += adjust + 2;
-    }
-    return;
+    BranchRelativeOnCondition( !( p_register & CARRY_FLAG ) );
 }
 
-//BCS nearlabel    B0    Program Counter Relative        2
-void fB0_BCs(){
-    if (CARRY_FLAG & p_register) {
-        char adjust = (char)immediate_8();
-        program_counter += adjust + 2;
-    }
-    else {
-        program_counter += 2;
-    }
-    return;
+////BCS nearlabel    B0    Program Counter Relative        2
+void fB0_BCS(){
+    BranchRelativeOnCondition( CARRY_FLAG & p_register );
 }
 
-//BEQ nearlabel    F0    Program Counter Relative        2
+////BEQ nearlabel    F0    Program Counter Relative        2
 void fF0_BEQ(){
-    uint8_t res = p_register & ZERO_FLAG;
-    if (res == 0)
-        program_counter += 2;
-    else {
-        char adjust = (char)immediate_8();
-        program_counter += adjust + 2;
-    }
-    return;
+    BranchRelativeOnCondition( p_register & ZERO_FLAG );
 }
 
-#pragma region BIT
-void BIT_8( uint8_t UNUSED( val ) ) {
-    // TODO
-    
-}
-void BIT_16( uint16_t UNUSED( val ) ) {
-    // TODO
-}
-//BIT dp    24    Direct Page    NV� - Z - 2
-void f24_BIT(){
-    uint8_t val = direct_8();
-    BIT_8(val);
-    program_counter += 2;
-}
 
-//BIT addr    2C    Absolute    NV� - Z - 3
-void f2C_BIT(){
-    uint8_t val = absolute_8();
-    BIT_8(val);
-    program_counter += 3;
-}
-
-//BIT dp, X    34    DP Indexed, X    NV� - Z - 2
-void f34_BIT(){
-    uint8_t val = direct_indexed_x_8();
-    BIT_8(val);
-    program_counter += 2;
-}
-
-//BIT addr, X    3C    Absolute Indexed, X    NV� - Z - 3
-void f3C_BIT(){
-    uint8_t val = absolute_indexed_x_8();
-    BIT_8(val);
-    program_counter += 3;
-}
-
-//BIT #const    89    Immediate    ��Z - 2
-void f89_BIT(){
-    uint8_t val = immediate_8();
-    BIT_8(val);
-    program_counter += 2;
-}
-#pragma endregion 
-
-//BMI nearlabel    30    Program Counter Relative        2
+////BMI nearlabel    30    Program Counter Relative        2
 void f30_BMI(){
-    if ( ( p_register & NEGATIVE_FLAG ) == 0 )
-        program_counter += 2;
-    else {
-        char adjust = (char)immediate_8();
-        program_counter += adjust;
-    }
-    return;
+    BranchRelativeOnCondition( p_register & NEGATIVE_FLAG );
 }
 
-//BNE nearlabel    D0    Program Counter Relative        2
+////BNE nearlabel    D0    Program Counter Relative        2
 void fD0_BNE(){
-    uint16_t andRes = ZERO_FLAG & p_register;
-    if (andRes != 0)
-        program_counter += 2;
-    else {
-        char adjust = (char)immediate_8();
-        program_counter += adjust + 2;
-    }
-    return;
+    BranchRelativeOnCondition( !( p_register & ZERO_FLAG ) );
 }
 
-//BPL nearlabel    10    Program Counter Relative        2
+////BPL nearlabel    10    Program Counter Relative        2
 void f10_BPL(){
-    if (NEGATIVE_FLAG & p_register)
-        program_counter += 2;
-    else {
-        char adjust = (char)immediate_8();
-        program_counter += 2 + adjust;
-    }
-    return;
+    BranchRelativeOnCondition( !( p_register & NEGATIVE_FLAG ) );
 }
 
-//BRA nearlabel    80    Program Counter Relative        2
+////BRA nearlabel    80    Program Counter Relative        2
 void f80_BRA(){
-    char adjust = (char)immediate_8();
-    program_counter += adjust + 2;
-    return;
+    BranchRelativeOnCondition( true );
 }
 
-//BRK    0    Stack / Interrupt    � - DI�    28
+////BVC nearlabel    50    Program Counter Relative        2
+void f50_BVC(){
+    BranchRelativeOnCondition( !( p_register & OVERFLOW_FLAG ) );
+}
+
+////BVS nearlabel    70    Program Counter Relative        2
+void f70_BVS(){
+    BranchRelativeOnCondition( p_register & OVERFLOW_FLAG );
+}
+
+////BRK    0    Stack / Interrupt    � - DI�    28
 void f00_BRK(){
-    call_stack[cs_counter++] = program_counter = 2;
+    // TODO 
+    call_stack[ cs_counter++ ] = nextOperationOffset;
     program_counter = 0xFFE6;
 }
 
-//BRL label    82    Program Counter Relative Long        3
+////BRL label    82    Program Counter Relative Long        3
 void f82_BRL(){
-    short adjust = (short)relative_long();
-    program_counter += adjust+2;
+    int16_t offset = (int16_t) readU16( immediate() );
+    nextOperationOffset += offset;
 }
 
-//BVC nearlabel    50    Program Counter Relative        2
-void f50_BVC(){
-    if ( ( OVERFLOW_FLAG & p_register ) == 1)
-        program_counter += 2;
-    else {
-        char adjust = (char)immediate_8();
-        program_counter += adjust + 2;
-    }
-    return;
-}
 
-//BVS nearlabel    70    Program Counter Relative        2
-void f70_BVS(){
+#pragma region BIT
 
-    if ((OVERFLOW_FLAG & p_register) == 0) {
-        program_counter += 2;
-        return;
+static inline void BIT( uint8_t *O1 ){
+    uint8_t negative = 0x00;
+    uint8_t overflow = 0x00;
+    uint8_t zero = 0x00;
+
+    if ( p_register & M_FLAG ) {
+        uint8_t result = (uint8_t) ( accumulator & 0x00FF ) & *O1;
+        zero = ( result == 0 ) ? ZERO_FLAG : zero;
+        negative = ( *O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
+        overflow = ( *O1 & 0x40 ) ? OVERFLOW_FLAG : overflow;
     }
     else {
-        char adjust = (char)immediate_8();
-        program_counter += adjust + 2;
+        uint16_t O1U16 = readU16( O1 );
+        uint16_t result = accumulator & O1U16;
+        zero = ( result == 0 ) ? ZERO_FLAG : zero;
+        negative = ( O1U16 & 0x8000 ) ? NEGATIVE_FLAG : negative;
+        overflow = ( O1U16 & 0x4000 ) ? OVERFLOW_FLAG : overflow;
     }
-    return;
+    
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG | OVERFLOW_FLAG  ) )
+        | zero | negative | overflow;
+
 }
 
-//CLC    18    Implied    �� - C    1
+////BIT dp    24    Direct Page    NV� - Z - 2
+void f24_BIT(){
+    BIT( direct( 0 ) );
+}
+
+////BIT addr    2C    Absolute    NV� - Z - 3
+void f2C_BIT(){
+    BIT( absolute( 0 ) );
+}
+
+////BIT dp, X    34    DP Indexed, X    NV� - Z - 2
+void f34_BIT(){
+    BIT( direct( X ) );
+}
+
+////BIT addr, X    3C    Absolute Indexed, X    NV� - Z - 3
+void f3C_BIT(){
+    BIT( absoluteIndexedX() );
+}
+
+////BIT #const    89    Immediate    ��Z - 2
+void f89_BIT(){
+    // TODO ensure N and V are unaffected
+    uint16_t pRegisterPersistent = p_register & ( NEGATIVE_FLAG | OVERFLOW_FLAG );
+    if ( !( p_register & M_FLAG ) ) {
+        ++nextOperationOffset;
+    }
+    BIT( immediate() );
+    p_register = ( p_register & ~( NEGATIVE_FLAG | OVERFLOW_FLAG ) ) | pRegisterPersistent;
+}
+#pragma endregion 
+
+////CLC    18    Implied    �� - C    1
 void f18_CLC(){
-    p_register = p_register & ~CARRY_FLAG;
-    program_counter++;
+    p_register &= ~CARRY_FLAG;
 }
 
-//CLD    D8    Implied    � - D�    1
+////CLD    D8    Implied    � - D�    1
 void fD8_CLD(){
-    p_register = p_register & ~DECIMAL_FLAG;
-    program_counter++;
+    p_register &= ~DECIMAL_FLAG;
 }
 
-//CLI    58    Implied    ��I�    1
+////CLI    58    Implied    ��I�    1
 void f58_CLI(){
-    p_register = p_register & ~INTERRUPT_FLAG;
-    program_counter++;
+    p_register &= ~INTERRUPT_FLAG;
 }
 
-//CLV    B8    Implied    #NAME ? 1
+////CLV    B8    Implied    #NAME ? 1
 void fB8_CLV(){
-    p_register = p_register & ~OVERFLOW_FLAG;
-    program_counter++;
+    p_register &= ~OVERFLOW_FLAG;
 }
 
 #pragma region cmp
@@ -1470,2349 +811,1544 @@ void CMP_16(uint16_t reg, uint16_t data) {
         p_register &= ~CARRY_FLAG;
 }
 
-//CMP(_dp, _X)    C1    DP Indexed Indirect, X    N��ZC    2
+void CMP( uint16_t registerValue, uint8_t *O1, uint16_t mask ) {
+    uint16_t zero = 0x00;
+    uint16_t negative = 0x00;
+    uint16_t carry = 0x00;
+    if ( p_register & mask ) {
+        uint8_t regU8 = (uint8_t) ( registerValue & 0x00FF );
+        uint8_t O1U8 = *O1;
+        uint8_t res = regU8 - O1U8;
+        zero = ( res == 0 ) ? ZERO_FLAG : 0x00;
+        negative = ( res & 0x80 ) ? NEGATIVE_FLAG : 0x00;
+        carry = ( regU8 >= O1U8 ) ? CARRY_FLAG : 0x00;
+    }
+    else {
+        uint16_t O1U16 = readU16( O1 );
+        uint16_t res = registerValue - O1U16;
+        zero = ( res == 0 ) ? ZERO_FLAG : 0x00;
+        negative = ( res & 0x8000 ) ? NEGATIVE_FLAG : 0x00;
+        carry = ( registerValue >= O1U16 ) ? CARRY_FLAG : 0x00;
+    }
+
+    p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG | CARRY_FLAG ) )
+        | zero | negative | carry;
+}
+
+////CMP(_dp, _X)    C1    DP Indexed Indirect, X    N��ZC    2
 void fC1_CMP(){
-    if (m_flag() == 0) {
-        uint16_t val = direct_indexed_indirect_16();
-        CMP_16(accumulator, val);
-    }
-    else {
-        uint8_t val = direct_indexed_indirect_8();
-        CMP_8(accumulator, val);
-    }
-    program_counter += 2;
+    CMP( accumulator, directIndexedXIndirect(), M_FLAG );
 }
 
-//CMP sr, S    C3    Stack Relative    N��ZC    2
+////CMP sr, S    C3    Stack Relative    N��ZC    2
 void fC3_CMP(){
-    if (m_flag() == 0) {
-        uint16_t val = stack_relative_16();
-        CMP_16(accumulator, val);
-    }
-    else {
-        uint8_t val = stack_relative_8();
-        CMP_8(accumulator, val);
-    }
-    program_counter += 2;
+    CMP( accumulator, stackRelative(), M_FLAG );
 }
 
-//CMP dp    C5    Direct Page    N��ZC    2
+////CMP dp    C5    Direct Page    N��ZC    2
 void fC5_CMP(){
-    if (m_flag() == 0) {
-        uint16_t val = direct_16();
-        CMP_16(accumulator, val);
-    }
-    else {
-        uint8_t val = direct_8();
-        CMP_8(accumulator, val);
-    }
-    program_counter += 2;
+    CMP( accumulator, direct( 0 ), M_FLAG );
 }
 
-//CMP[_dp_]    C7    DP Indirect Long    N��ZC    2
+////CMP[_dp_]    C7    DP Indirect Long    N��ZC    2
 void fC7_CMP(){
-    if (m_flag() == 0) {
-        uint16_t val = direct_indirect_long_16();
-        CMP_16(accumulator, val);
-    }
-    else {
-        uint8_t val = direct_indirect_long_8();
-        CMP_8(accumulator, val);
-    }
-    program_counter += 2;
+    CMP( accumulator, directIndirectLong(), M_FLAG );
 }
 
-//CMP #const    C9    Immediate    N��ZC    2
+////CMP #const    C9    Immediate    N��ZC    2
 void fC9_CMP(){
-    if (m_flag() == 0) {
-        uint16_t val = immediate_16();
-        CMP_16(accumulator, val);
-        program_counter += 3;
+    if ( !( p_register & M_FLAG ) ) {
+        ++nextOperationOffset;
     }
-    else {
-        uint8_t val = immediate_8();
-        CMP_8(accumulator, val);
-        program_counter += 2;
-    }
-    
+    CMP( accumulator, immediate(), M_FLAG );
 }
 
-//CMP addr    CD    Absolute    N��ZC    3
+////CMP addr    CD    Absolute    N��ZC    3
 void fCD_CMP(){
-    if (m_flag() == 0) {
-        uint16_t val = absolute_16();
-        CMP_16(accumulator, val);
-    }
-    else {
-        uint8_t val = absolute_8();
-        CMP_8(accumulator, val);
-    }
-    program_counter += 3;
+    CMP( accumulator, absolute( 0 ), M_FLAG );
 }
 
-//CMP long    CF    Absolute Long    N��ZC    4
+////CMP long    CF    Absolute Long    N��ZC    4
 void fCF_CMP(){
-    if (m_flag() == 0) {
-        uint16_t val = absolute_long_16();
-        CMP_16(accumulator, val);
-    }
-    else {
-        uint8_t val = absolute_long_8();
-        CMP_8(accumulator, val);
-    }
-    program_counter += 4;
+    CMP( accumulator, absoluteLong( 0 ), M_FLAG );
 }
 
-//CMP(_dp_), Y    D1    DP Indirect Indexed, Y    N��ZC    2
+////CMP(_dp_), Y    D1    DP Indirect Indexed, Y    N��ZC    2
 void fD1_CMP(){
-    if (m_flag() == 0) {
-        uint16_t val = direct_indirect_indexed_16();
-        CMP_16(accumulator, val);
-    }
-    else {
-        uint8_t val = direct_indirect_indexed_8();
-        CMP_8(accumulator, val);
-    }
-    program_counter += 2;
+    CMP( accumulator, directIndirectIndexedY(), M_FLAG );
 }
 
-//CMP(_dp_)    D2    DP Indirect    N��ZC    2
+////CMP(_dp_)    D2    DP Indirect    N��ZC    2
 void fD2_CMP(){
-    if (m_flag() == 0) {
-        uint16_t val = direct_indirect_16();
-        CMP_16(accumulator, val);
-    }
-    else {
-        uint8_t val = direct_indirect_8();
-        CMP_8(accumulator, val);
-    }
-    program_counter += 2;
+    CMP( accumulator, directIndirect(), M_FLAG );
 }
 
-//CMP(_sr_, S), Y    D3    SR Indirect Indexed, Y    N��ZC    2
+////CMP(_sr_, S), Y    D3    SR Indirect Indexed, Y    N��ZC    2
 void fD3_CMP(){
-    if (m_flag() == 0) {
-        uint16_t val = stack_relative_indirect_indexed_16();
-        CMP_16(accumulator, val);
-    }
-    else {
-        uint8_t val = stack_relative_indirect_indexed_8();
-        CMP_8(accumulator, val);
-    }
-    program_counter += 2;
+    CMP( accumulator, stackRelativeIndirectIndexedY(), M_FLAG );
 }
 
-//CMP dp, X    D5    DP Indexed, X    N��ZC    2
+////CMP dp, X    D5    DP Indexed, X    N��ZC    2
 void fD5_CMP(){
-    if (m_flag() == 0) {
-        uint16_t val = direct_indexed_x_16();
-        CMP_16(accumulator, val);
-    }
-    else {
-        uint8_t val = direct_indexed_x_8();
-        CMP_8(accumulator, val);
-    }
-    program_counter += 2;
+    CMP( accumulator, direct( X ), M_FLAG );
 }
 
-//CMP[_dp_], Y    D7    DP Indirect Long Indexed, Y    N��ZC    2
+////CMP[_dp_], Y    D7    DP Indirect Long Indexed, Y    N��ZC    2
 void fD7_CMP(){
-    if (m_flag() == 0) {
-        uint16_t val = direct_indirect_indexed_long_16();
-        CMP_16(accumulator, val);
-    }
-    else {
-        uint8_t val = direct_indirect_indexed_long_8();
-        CMP_8(accumulator, val);
-    }
-    program_counter += 2;
+    CMP( accumulator, directIndirectIndexedYLong(), M_FLAG );
 }
 
-//CMP addr, Y    D9    Absolute Indexed, Y    N��ZC    3
+////CMP addr, Y    D9    Absolute Indexed, Y    N��ZC    3
 void fD9_CMP(){
-    if (m_flag() == 0) {
-        uint16_t val = absolute_indexed_y_16();
-        CMP_16(accumulator, val);
-    }
-    else {
-        uint8_t val = absolute_indexed_y_8();
-        CMP_8(accumulator, val);
-    }
-    program_counter += 3;
+    CMP( accumulator, absoluteIndexedY(), M_FLAG );
 }
 
-//CMP addr, X    DD    Absolute Indexed, X    N��ZC    3
+////CMP addr, X    DD    Absolute Indexed, X    N��ZC    3
 void fDD_CMP(){
-    if (m_flag() == 0) {
-        uint16_t val = absolute_indexed_x_16();
-        CMP_16(accumulator, val);
-    }
-    else {
-        uint8_t val = absolute_indexed_x_8();
-        CMP_8(accumulator, val);
-    }
-    program_counter += 3;
+    CMP( accumulator, absoluteIndexedX(), M_FLAG );
 }
 
-//CMP long, X    DF    Absolute Long Indexed, X    N��ZC    4
+////CMP long, X    DF    Absolute Long Indexed, X    N��ZC    4
 void fDF_CMP(){
-    if (m_flag() == 0) {
-        uint16_t val = absolute_indexed_long_16();
-        CMP_16(accumulator, val);
-    }
-    else {
-        uint8_t val = absolute_indexed_long_8();
-        CMP_8(accumulator, val);
-    }
-    program_counter += 4;
+    CMP( accumulator, absoluteLongIndexedX(), M_FLAG );
 }
 
-//CPX #const    E0    Immediate    N��ZC    210
+////CPX #const    E0    Immediate    N��ZC    210
 void fE0_CPX(){
-    if (x_flag() == 0) {
-        uint16_t val = immediate_16();
-        CMP_16(X, val);
-        program_counter += 3;
-    }
-    else {
-        uint8_t val = immediate_8();
-        CMP_8(X, val);
-        program_counter += 2;
-    }
-    
+    if ( !( p_register & X_FLAG ) ) {
+        ++nextOperationOffset;
+    }   
+    CMP( X, immediate(), X_FLAG );
 }
 
-//CPX dp    E4    Direct Page    N��ZC    2
+////CPX dp    E4    Direct Page    N��ZC    2
 void fE4_CPX(){
-    if (x_flag() == 0) {
-        uint16_t val = direct_16();
-        CMP_16(X, val);
-    }
-    else {
-        uint8_t val = direct_8();
-        CMP_8(X, val);
-    }
-    program_counter += 2;
+    CMP( X, direct( 0 ), X_FLAG );
 }
 
-//CPX addr    EC    Absolute    N��ZC    3
+////CPX addr    EC    Absolute    N��ZC    3
 void fEC_CPX(){
-    if (x_flag() == 0) {
-        uint16_t val = absolute_16();
-        CMP_16(X, val);
-    }
-    else {
-        uint8_t val = absolute_8();
-        CMP_8(X, val);
-    }
-    program_counter += 3;
+    CMP( X, absolute( 0 ), X_FLAG );
 }
 
-//CPY #const    C0    Immediate    N��ZC    2
+////CPY #const    C0    Immediate    N��ZC    2
 void fC0_CPY(){
-    if (x_flag() == 0) {
-        uint16_t val = immediate_16();
-        CMP_16(Y, val);
-        program_counter += 3;
+    if ( !( p_register & X_FLAG ) ) {
+        ++nextOperationOffset;
     }
-    else {
-        uint8_t val = immediate_8();
-        CMP_8(Y, val);
-        program_counter += 2;
-    }
-    
+    CMP( Y, immediate(), X_FLAG );
 }
 
-//CPY dp    C4    Direct Page    N��ZC    2
+////CPY dp    C4    Direct Page    N��ZC    2
 void fC4_CPY(){
-    if (x_flag() == 0) {
-        uint16_t val = direct_16();
-        CMP_16(Y, val);
-    }
-    else {
-        uint8_t val = direct_8();
-        CMP_8(Y, val);
-    }
-    program_counter += 2;
+    CMP( Y, direct( 0 ), X_FLAG );
 }
 
-//CPY addr    CC    Absolute    N��ZC    3
+////CPY addr    CC    Absolute    N��ZC    3
 void fCC_CPY(){
-    if (x_flag() == 0) {
-        uint16_t val = absolute_16();
-        CMP_16(Y, val);
-    }
-    else {
-        uint8_t val = absolute_8();
-        CMP_8(Y, val);
-    }
-    program_counter += 2;
+    CMP( Y, absolute( 0 ), X_FLAG );
 }
 #pragma endregion
 
-//COP const    2    Stack / Interrupt    � - DI�    2
+////COP const    2    Stack / Interrupt    � - DI�    2
 void f02_COP() {
-    call_stack[cs_counter++] = program_counter;
+    call_stack[ cs_counter++] = nextOperationOffset;
     program_counter = 0xFFE4;
 }
 
 #pragma region INC_DEC
 
-void DEC_8(uint8_t* local_address) {
-    uint8_t val  = *local_address - 1;
-    *local_address = val;
-    set_p_register_8(val, NEGATIVE_FLAG | ZERO_FLAG);
+static inline void DEC( uint8_t *O1, uint16_t mask ) {
+    uint16_t negative = 0x00;
+    uint16_t zero = 0x00;
+    if ( p_register & mask ) {
+        --*O1;
+        negative = ( *O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
+        zero = ( *O1 == 0x00 ) ? ZERO_FLAG : negative;
+    }
+    else {
+        uint16_t result = readU16( O1 ) - 1;
+        storeU16( O1, result );
+        negative = ( result & 0x8000 ) ? NEGATIVE_FLAG : negative;
+        zero = ( result == 0x00 ) ? ZERO_FLAG : negative;
+    }
+
+    p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG ) )
+        | zero | negative;
 }
 
-void DEC_16(uint8_t* local_address) {
-    uint16_t val = get2Byte(local_address) - 1;
-    store2Byte_local(local_address, val);
-    set_p_register_16(val, NEGATIVE_FLAG | ZERO_FLAG);
-}
-
-void DEC( uint8_t* local_address ) {
-    if (m_flag() == 0)
-        DEC_16(local_address);
-    else
-        DEC_8(local_address);
-}
-void DECX( uint8_t* local_address ) {
-    if (x_flag() == 0)
-        DEC_16(local_address);
-    else
-        DEC_8(local_address);
-}
-
-//DEC A    3A    Accumulator    N��Z - 1
+////DEC A    3A    Accumulator    N��Z - 1
 void f3A_DEC(){
-    DEC( (uint8_t*) &accumulator );
-    program_counter += 1;
+    DEC( (uint8_t*) &accumulator, M_FLAG );
 }
 
-//DEC dp    C6    Direct Page    N��Z - 2
+////DEC dp    C6    Direct Page    N��Z - 2
 void fC6_DEC(){
-    uint16_t snes_addr = direct();
-    uint8_t* local_addr = accessAddressFromBank(data_bank_register, snes_addr);
-    DEC(local_addr);
-    program_counter += 2;
+    DEC( direct( 0 ), M_FLAG );
 }
 
-//DEC addr    CE    Absolute    N��Z - 3
+////DEC addr    CE    Absolute    N��Z - 3
 void fCE_DEC(){
-    uint32_t snes_addr = absolute();
-    uint8_t* local_addr = access_address(snes_addr);
-    DEC(local_addr);
-    program_counter += 3;
+    DEC( absolute( 0 ), M_FLAG );
 }
 
-//DEC dp, X    D6    DP Indexed, X    N��Z - 2
+////DEC dp, X    D6    DP Indexed, X    N��Z - 2
 void fD6_DEC(){
-    uint32_t snes_addr = direct_indexed_x();
-    uint8_t* local_addr = access_address(snes_addr);
-    DEC(local_addr);
-    program_counter += 2;
+    DEC( direct( X ), M_FLAG );
 }
 
-//DEC addr, X    DE    Absolute Indexed, X    N��Z - 3
+////DEC addr, X    DE    Absolute Indexed, X    N��Z - 3
 void fDE_DEC(){
-    uint16_t snes_addr = absolute_indexed_x();
-    uint8_t* local_addr = accessAddressFromBank(data_bank_register, snes_addr);
-    DEC(local_addr);
-    program_counter += 3;
+    DEC( absoluteIndexedX(), M_FLAG );
 }
 
-//DEX    CA    Implied    N��Z - 1
+////DEX    CA    Implied    N��Z - 1
 void fCA_DEX(){
-    DECX( (uint8_t*) &X );
-    program_counter += 1;
+    DEC( (uint8_t*) &X, X_FLAG );
 }
 
-//DEY    88    Implied    N��Z - 1
+////DEY    88    Implied    N��Z - 1
 void f88_DEY(){
-    DECX( (uint8_t*) &Y );
-    program_counter += 1;
+    DEC( (uint8_t*) &Y, X_FLAG );
 }
 
-void INC_8(uint8_t* local_address) {
-    uint8_t val = *local_address + 1;
-    *local_address = val;
-    set_p_register_8(val, NEGATIVE_FLAG | ZERO_FLAG);
+static inline void INC( uint8_t *O1, uint16_t mask ) {
+    uint16_t negative = 0x00;
+    uint16_t zero = 0x00;
+    if ( p_register & mask ) {
+        ++*O1;
+        negative = ( *O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
+        zero = ( *O1 == 0x00 ) ? ZERO_FLAG : negative;
+    }
+    else {
+        uint16_t result = readU16( O1 ) + 1;
+        storeU16( O1, result );
+        negative = ( result & 0x8000 ) ? NEGATIVE_FLAG : negative;
+        zero = ( result == 0x00 ) ? ZERO_FLAG : negative;
+    }
+    p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG ) )
+        | zero | negative;
 }
 
-void INC_16(uint8_t* local_address) {
-    uint16_t val = get2Byte(local_address) + 1;
-    store2Byte_local(local_address, val);
-    set_p_register_16(val, NEGATIVE_FLAG | ZERO_FLAG);
-}
-
-void INC(uint8_t* local_address) {
-    if (m_flag() == 0)
-        INC_16(local_address);
-    else
-        INC_8(local_address);
-}
-void INCX(uint8_t* local_address) {
-    if (x_flag() == 0)
-        INC_16(local_address);
-    else
-        INC_8(local_address);
-}
-
-//INC A    1A    Accumulator    N��Z - 1
+////INC A    1A    Accumulator    N��Z - 1
 void f1A_INC() {
-    INC( (uint8_t*) &accumulator );
-    program_counter += 1;
+    INC( (uint8_t*) &accumulator, M_FLAG );
 }
 
-//INC dp    E6    Direct Page    N��Z - 2
+////INC dp    E6    Direct Page    N��Z - 2
 void fE6_INC() {
-    uint16_t snes_addr = direct();
-    uint8_t* local_addr = accessAddressFromBank(data_bank_register, snes_addr);
-    INC(local_addr);
-    program_counter += 2;
+    INC( direct( 0 ), M_FLAG );
 }
 
-//INC addr    EE    Absolute    N��Z - 3
+////INC addr    EE    Absolute    N��Z - 3
 void fEE_INC() {
-    uint32_t snes_addr = absolute();
-    uint8_t* local_addr = access_address(snes_addr);
-    INC(local_addr);
-    program_counter += 3;
+    INC( absolute( 0 ), M_FLAG );
 }
 
-//INC dp, X    F6    DP Indexed, X    N��Z - 2
+////INC dp, X    F6    DP Indexed, X    N��Z - 2
 void fF6_INC() {
-    uint32_t snes_addr = direct_indexed_x();
-    uint8_t* local_addr = access_address(snes_addr);
-    INC(local_addr);
-    program_counter += 2;
+    INC( direct( X ), M_FLAG );
 }
 
-//INC addr, X    FE    Absolute Indexed, X    N��Z - 3
+////INC addr, X    FE    Absolute Indexed, X    N��Z - 3
 void fFE_INC() {
-    uint16_t snes_addr = absolute_indexed_x();
-    uint8_t* local_addr = accessAddressFromBank(data_bank_register, snes_addr);
-    INC(local_addr);
-    program_counter += 3;
+    INC( absoluteIndexedX(), M_FLAG );
 }
 
-//INX    E8    Implied    N��Z - 1
+////INX    E8    Implied    N��Z - 1
 void fE8_INX() {
-    INCX( (uint8_t*) &X );
-    program_counter += 1;
+    INC( (uint8_t*) &X, X_FLAG );
 }
 
-//INY    C8    Implied    N��Z - 1
+////INY    C8    Implied    N��Z - 1
 void fC8_INY() {
-    INCX( (uint8_t*) &Y );
-    program_counter += 1;
+    INC( (uint8_t*) &Y, X_FLAG );
 }
 #pragma endregion
 
 #pragma region EOR
-void EOR_8(uint8_t val) {
-    accumulator ^= val;
-    set_p_register_8(val, NEGATIVE_FLAG | ZERO_FLAG);
-}
-void EOR_16(uint16_t val) {
-    accumulator ^= val;
-    set_p_register_16(val, NEGATIVE_FLAG | ZERO_FLAG);
+
+static inline void EOR( uint8_t *O1 ) {
+    uint16_t negative = 0x00;
+    uint16_t zero = 0x00;
+    if ( p_register & M_FLAG ) {
+        uint8_t result = ( (uint8_t) ( accumulator & 0x00FF ) ) ^ *O1;
+        negative = ( result & 0x80 ) ? NEGATIVE_FLAG : negative;
+        zero = ( result == 0x00 ) ? ZERO_FLAG : negative;
+    }
+    else {
+        uint16_t result = accumulator ^ readU16( O1 );
+        negative = ( result & 0x8000 ) ? NEGATIVE_FLAG : negative;
+        zero = ( result == 0x00 ) ? ZERO_FLAG : negative;
+    }
+
+    p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG ) )
+        | zero | negative;
 }
 
-//EOR(_dp, _X)    41    DP Indexed Indirect, X    N��Z - 2
+////EOR(_dp, _X)    41    DP Indexed Indirect, X    N��Z - 2
 void f41_EOR(){
-    if(m_flag() == 1) {
-        EOR_8(direct_indexed_indirect_8());
-    }
-    else {
-        EOR_16(direct_indexed_indirect_16());
-    }
-
-    program_counter += 2;
+    EOR( directIndexedXIndirect() );
 }
 
-//EOR sr, S    43    Stack Relative    N��Z - 2
+////EOR sr, S    43    Stack Relative    N��Z - 2
 void f43_EOR(){
-    if (m_flag() == 1) {
-        EOR_8(stack_relative_8());
-    }
-    else {
-        EOR_16(stack_relative_16());
-    }
-
-    program_counter += 2;
+    EOR( stackRelative() );
 }
 
-//EOR dp    45    Direct Page    N��Z - 2
+////EOR dp    45    Direct Page    N��Z - 2
 void f45_EOR(){
-    if (m_flag() == 1) {
-        EOR_8(direct_8());
-    }
-    else {
-        EOR_16(direct_16());
-    }
-
-    program_counter += 2;
+    EOR( direct( 0 ) );
 }
 
-//EOR[_dp_]    47    DP Indirect Long    N��Z - 2
+////EOR[_dp_]    47    DP Indirect Long    N��Z - 2
 void f47_EOR(){
-    if (m_flag() == 1) {
-        EOR_8(direct_indirect_long_8());
-    }
-    else {
-        EOR_16(direct_indirect_long_16());
-    }
-
-    program_counter += 2;
+    EOR( directIndirectLong() );
 }
 
-//EOR #const    49    Immediate    N��Z - 2
+////EOR #const    49    Immediate    N��Z - 2
 void f49_EOR(){
-    if (m_flag() == 1) {
-        EOR_8(immediate_8());
-        program_counter += 2;
+    if ( !( p_register & M_FLAG ) ) {
+        ++nextOperationOffset;
     }
-    else {
-        EOR_16(immediate_16());
-        program_counter += 3;
-    }
+    EOR( immediate() );
 }
 
-//EOR addr    4D    Absolute    N��Z - 3
+////EOR addr    4D    Absolute    N��Z - 3
 void f4D_EOR(){
-    if (m_flag() == 1) {
-        EOR_8(absolute_8());
-    }
-    else {
-        EOR_16(absolute_16());
-    }
-
-    program_counter += 3;
+    EOR( absolute( 0 ) );
 }
 
-//EOR long    4F    Absolute Long    N��Z - 4
+////EOR long    4F    Absolute Long    N��Z - 4
 void f4F_EOR(){
-    if (m_flag() == 1) {
-        EOR_8(direct_indexed_indirect_8());
-    }
-    else {
-        EOR_16(direct_indexed_indirect_16());
-    }
-
-    program_counter += 4;
+    EOR( absoluteLong( 0 ) );
 }
 
-//EOR(_dp_), Y    51    DP Indirect Indexed, Y    N��Z - 2
+////EOR(_dp_), Y    51    DP Indirect Indexed, Y    N��Z - 2
 void f51_EOR(){
-    if (m_flag() == 1) {
-        EOR_8(absolute_long_8());
-    }
-    else {
-        EOR_16(absolute_long_16());
-    }
-
-    program_counter += 2;
+    EOR( directIndirectIndexedY( 0 ) );
 }
 
-//EOR(_dp_)    52    DP Indirect    N��Z - 2
+////EOR(_dp_)    52    DP Indirect    N��Z - 2
 void f52_EOR(){
-    if (m_flag() == 1) {
-        EOR_8(direct_indirect_8());
-    }
-    else {
-        EOR_16(direct_indirect_16());
-    }
-
-    program_counter += 2;
+    EOR( directIndirect() );
 }
 
-//EOR(_sr_, S), Y    53    SR Indirect Indexed, Y    N��Z - 2
+////EOR(_sr_, S), Y    53    SR Indirect Indexed, Y    N��Z - 2
 void f53_EOR(){
-    if (m_flag() == 1) {
-        EOR_8(stack_relative_indirect_indexed_8());
-    }
-    else {
-        EOR_16(stack_relative_indirect_indexed_16());
-    }
-
-    program_counter += 2;
+    EOR( stackRelativeIndirectIndexedY() );
 }
 
-//EOR dp, X    55    DP Indexed, X    N��Z - 2
+////EOR dp, X    55    DP Indexed, X    N��Z - 2
 void f55_EOR(){
-    if (m_flag() == 1) {
-        EOR_8(direct_indexed_x_8());
-    }
-    else {
-        EOR_16(direct_indexed_x_16());
-    }
-
-    program_counter += 2;
+    EOR( direct( X ) );
 }
 
-//EOR[_dp_], Y    57    DP Indirect Long Indexed, Y    N��Z - 2
+////EOR[_dp_], Y    57    DP Indirect Long Indexed, Y    N��Z - 2
 void f57_EOR(){
-    if (m_flag() == 1) {
-        EOR_8(direct_indirect_indexed_long_8());
-    }
-    else {
-        EOR_16(direct_indirect_indexed_long_16());
-    }
-
-    program_counter += 2;
+    EOR( directIndirectIndexedYLong() );
 }
 
-//EOR addr, Y    59    Absolute Indexed, Y    N��Z - 3
+////EOR addr, Y    59    Absolute Indexed, Y    N��Z - 3
 void f59_EOR(){
-    if (m_flag() == 1) {
-        EOR_8(absolute_indexed_y_8());
-    }
-    else {
-        EOR_16(absolute_indexed_y_16());
-    }
-
-    program_counter += 3;
+    EOR( absoluteIndexedY() );
 }
 
-//EOR addr, X    5D    Absolute Indexed, X    N��Z - 3
+////EOR addr, X    5D    Absolute Indexed, X    N��Z - 3
 void f5D_EOR(){
-    if (m_flag() == 1) {
-        EOR_8(absolute_indexed_x_8());
-    }
-    else {
-        EOR_16(absolute_indexed_x_16());
-    }
-
-    program_counter += 3;
+    EOR( absoluteIndexedX() );
 }
 
-//EOR long, X    5F    Absolute Long Indexed, X    N��Z - 4
+////EOR long, X    5F    Absolute Long Indexed, X    N��Z - 4
 void f5F_EOR(){
-    if (m_flag() == 1) {
-        EOR_8(absolute_indexed_long_8());
-    }
-    else {
-        EOR_16(absolute_indexed_long_16());
-    }
-
-    program_counter += 4;
+    EOR( absoluteLongIndexedX() );
 }
 #pragma endregion
 
 #pragma region JMP
-//JMP addr    4C    Absolute        3
+
+static inline void JMP( uint8_t *O1 ) {
+    nextOperationOffset = readU16( O1 );
+}
+
+static inline void JMPL( uint8_t *O1 ) {
+    uint32_t addr = readU24( O1 );
+    program_bank_register = ( addr >> 16 ) & 0x00FF;
+    nextOperationOffset = addr & 0xFFFF;
+}
+
+////JMP addr    4C    Absolute        3
 void f4C_JMP(){
-    uint16_t operand = immediate_16();
-    program_counter = program_bank_register;
-    program_counter <<= 16;
-    program_counter |= operand;
+    JMP( immediate( 0 ) );
+    ++program_counter;
 }
 
-//JMP long    5C    Absolute Long        4
+////JMP long    5C    Absolute Long        4
 void f5C_JMP(){
-    uint32_t operand = absolute_long();
-    program_counter = operand;
-    operand >>= 16;
-    program_bank_register = operand;
+    JMPL( immediate() );
+    program_counter += 2;
 }
 
-//JMP(_addr_)    6C    Absolute Indirect        3
+////JMP(_addr_)    6C    Absolute Indirect        3
 void f6C_JMP(){
-    uint16_t operand = absolute_indirect_16();
-    program_counter = operand;
-    operand >>= 16;
-    program_bank_register = operand;
+    JMP( absoluteIndirect() );
 }
 
-//JMP(_addr, X_)    7C    Absolute Indexed Indirect        3
+////JMP(_addr, X_)    7C    Absolute Indexed Indirect        3
 void f7C_JMP(){
-    uint16_t operand = absolute_indexed_indirect_16();
-    program_counter = operand;
-    operand >>= 16;
-    program_bank_register = operand;
+    // TODO - verify
+    JMP( absoluteIndexedXIndirect() );
 }
 
-//JMP[addr]    DC    Absolute Indirect Long        3
+////JMP[addr]    DC    Absolute Indirect Long        3
 void fDC_JMP(){
-    uint32_t operand = absolute_indirect_long_32();
-    program_counter = operand;
-    operand >>= 16;
-    program_bank_register = operand;
+    // TODO - verify
+    JMPL( absoluteIndirect() );
 }
 
-//JSR addr    20    Absolute        3
+static inline void JSR( uint8_t *O1 ) {
+    pushU16( program_counter );
+    JMP( O1 );
+}
+
+////JSR addr    20    Absolute        3
 void f20_JSR(){
-    uint16_t operand = absolute();
-    push_to_stack_16( program_counter + 2 );
-    program_counter = operand;
+    JSR( immediate( 0 ) );
 }
 
-//JSR or JSL long    22    Absolute Long        4
+////JSR or JSL long    22    Absolute Long        4
 void f22_JSR(){
-    uint32_t operand = absolute_long();
-    uint8_t pbr = program_bank_register;
-    push_to_stack_8( pbr );
-    uint16_t addr = program_counter;
-    push_to_stack_16( addr + 3 );
-    program_counter = operand;
-    operand >>= 16;
-    program_bank_register = operand;
-
+    pushU8( program_bank_register );
+    pushU16( program_counter + 2 );
+    JMPL( immediate( 0 ) );
 }
 
-//JSR(addr, X))    FC    Absolute Indexed Indirect        3
+////JSR(addr, X))    FC    Absolute Indexed Indirect        3
 void fFC_JSR(){
-    uint16_t operand = absolute_indexed_indirect_16();
-    push_to_stack_16( program_counter + 2 );
-    program_counter = operand;
+    // Not sure if this should be dereferenced
+    JSR( absoluteIndexedXIndirect() );
 }
 #pragma endregion
 
 #pragma region LD
 
-void LDA_8(uint8_t val) {
-    accumulator &= 0xFF00;
-    accumulator |= val;
-    set_p_register_8(val, NEGATIVE_FLAG | ZERO_FLAG);
-}
-void LDA_16(uint16_t val) {
-    accumulator = val;
-    set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+// TODO - switch to getter/setter for target
+static inline void LD( uint16_t mask, uint16_t *targetReg, uint8_t *O1 ) {
+    uint16_t negative = 0x00;
+    uint16_t zero = 0x00;
+    if ( p_register & mask ) {
+        negative = ( *O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
+        zero = ( *O1 == 0 ) ? ZERO_FLAG : zero;
+
+        *targetReg = ( *targetReg & 0xFF00 ) | (uint16_t) *O1;
+    }
+    else {
+        *targetReg = readU16( O1 );
+        negative = ( *targetReg & 0x8000 ) ? NEGATIVE_FLAG : negative;
+        zero = ( *targetReg == 0 ) ? ZERO_FLAG : zero;
+    }
+    p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG ) )
+        | zero | negative;
 }
 
-//LDA(_dp, _X)    A1    DP Indexed Indirect, X    N��Z - 2
+////LDA(_dp, _X)    A1    DP Indexed Indirect, X    N��Z - 2
 void fA1_LDA(){
-    if (m_flag() == 0) {
-        LDA_16(direct_indexed_indirect_16());
-    }
-    else {
-        LDA_8(direct_indexed_indirect_8());
-        
-    }
-    program_counter += 2;
+    LD( M_FLAG, &accumulator, directIndexedXIndirect() );
 }
 
-//LDA sr, S    A3    Stack Relative    N��Z - 2
+////LDA sr, S    A3    Stack Relative    N��Z - 2
 void fA3_LDA(){
-    if (m_flag() == 0) {
-        LDA_16(stack_relative_16());
-    }
-    else {
-        LDA_8(stack_relative_8());
-    }
-    program_counter += 2; 
+    LD( M_FLAG, &accumulator, stackRelative() );
 }
 
-//LDA dp    A5    Direct Page    N��Z - 2
+////LDA dp    A5    Direct Page    N��Z - 2
 void fA5_LDA(){
-    if (m_flag() == 0) {
-        LDA_16(direct_16());
-    }
-    else {
-        uint8_t val = direct_8();
-        LDA_8(val);
-
-    }
-    program_counter += 2;
+    LD( M_FLAG, &accumulator, direct( 0 ) );
 }
 
-//LDA[_dp_]    A7    DP Indirect Long    N��Z - 2
+////LDA[_dp_]    A7    DP Indirect Long    N��Z - 2
 void fA7_LDA(){
-    if (m_flag() == 0) {
-        LDA_16(direct_indirect_long_16());
-    }
-    else {
-        LDA_8(direct_indirect_long_8());
-    }
-    program_counter += 2;
+    LD( M_FLAG, &accumulator, directIndirectLong() );
 }
 
-//LDA #const    A9    Immediate    N��Z - 2
+////LDA #const    A9    Immediate    N��Z - 2
 void fA9_LDA(){
-    if (m_flag() == 0) {
-        LDA_16(immediate_16());
-        program_counter += 3;
+    if ( !( p_register & M_FLAG ) ) {
+        ++nextOperationOffset;
     }
-    else {
-        LDA_8(immediate_8());
-        program_counter += 2;
-    }
-    
+    LD( M_FLAG, &accumulator, immediate() );
 }
 
-//LDA addr    AD    Absolute    N��Z - 3
+////LDA addr    AD    Absolute    N��Z - 3
 void fAD_LDA(){
-    if (m_flag() == 0) {
-        LDA_16(absolute_16());
-    }
-    else {
-        LDA_8(absolute_8());
-    }
-    program_counter += 3;
+    LD( M_FLAG, &accumulator, absolute( 0 ) );
 }
 
-//LDA long    AF    Absolute Long    N��Z - 4
+////LDA long    AF    Absolute Long    N��Z - 4
 void fAF_LDA(){
-    if (m_flag() == 0) {
-        LDA_16(absolute_long_16());
-    }
-    else {
-        LDA_8(absolute_long_8());
-    }
-    program_counter += 4;
+    LD( M_FLAG, &accumulator, absoluteLong( 0 ) );
 }
 
-//LDA(_dp_), Y    B1    DP Indirect Indexed, Y    N��Z - 2
+////LDA(_dp_), Y    B1    DP Indirect Indexed, Y    N��Z - 2
 void fB1_LDA(){
-    if (m_flag() == 0) {
-        LDA_16(direct_indexed_indirect_16());
-    }
-    else {
-        LDA_8(direct_indexed_indirect_8());
-    }
-    program_counter += 2;
+    LD( M_FLAG, &accumulator, directIndirectIndexedY( 0 ) );
 }
 
-//LDA(_dp_)    B2    DP Indirect    N��Z - 2
+////LDA(_dp_)    B2    DP Indirect    N��Z - 2
 void fB2_LDA(){
-    if (m_flag() == 0) {
-        LDA_16(direct_indirect_16());
-    }
-    else {
-        LDA_8(direct_indirect_8());
-
-    }
-    program_counter += 2;
+    LD( M_FLAG, &accumulator, directIndirect() );
 }
 
-//LDA(_sr_, S), Y    B3    SR Indirect Indexed, Y    N��Z - 2
+////LDA(_sr_, S), Y    B3    SR Indirect Indexed, Y    N��Z - 2
 void fB3_LDA(){
-    if (m_flag() == 0) {
-        LDA_16(stack_relative_indirect_indexed_16());
-    }
-    else {
-        LDA_8(stack_relative_indirect_indexed_8());
-
-    }
-    program_counter += 2;
+    LD( M_FLAG, &accumulator, stackRelativeIndirectIndexedY() );
 }
 
-//LDA dp, X    B5    DP Indexed, X    N��Z - 2
+////LDA dp, X    B5    DP Indexed, X    N��Z - 2
 void fB5_LDA(){
-    if (m_flag() == 0) {
-        LDA_16(direct_indexed_x_16());
-    }
-    else {
-        LDA_8(direct_indexed_x_8());
-
-    }
-    program_counter += 2;
+    LD( M_FLAG, &accumulator, direct( X ) );
 }
 
-//LDA[_dp_], Y    B7    DP Indirect Long Indexed, Y    N��Z - 2
+////LDA[_dp_], Y    B7    DP Indirect Long Indexed, Y    N��Z - 2
 void fB7_LDA(){
-    if (m_flag() == 0) {
-        LDA_16(direct_indirect_indexed_long_16());
-    }
-    else {
-        LDA_8(direct_indirect_indexed_long_8());
-    }
-    program_counter += 2;
+    LD( M_FLAG, &accumulator, directIndirectIndexedYLong() );
 }
 
-//LDA addr, Y    B9    Absolute Indexed, Y    N��Z - 3
+////LDA addr, Y    B9    Absolute Indexed, Y    N��Z - 3
 void fB9_LDA(){
-    if (m_flag() == 0) {
-        LDA_16(absolute_indexed_y_16());
-    }
-    else {
-        LDA_8(absolute_indexed_y_8());
-
-    }
-    program_counter += 3;
+    LD( M_FLAG, &accumulator, absoluteIndexedY() );
 }
 
-//LDA addr, X    BD    Absolute Indexed, X    N��Z - 3
+////LDA addr, X    BD    Absolute Indexed, X    N��Z - 3
 void fBD_LDA(){
-    if (m_flag() == 0) {
-        LDA_16(absolute_indexed_x_16());
-    }
-    else {
-        LDA_8(absolute_indexed_x_8());
-
-    }
-    program_counter += 3;
+    LD( M_FLAG, &accumulator, absoluteIndexedX() );
 }
 
-//LDA long, X    BF    Absolute Long Indexed, X    N��Z - 4
+////LDA long, X    BF    Absolute Long Indexed, X    N��Z - 4
 void fBF_LDA(){
-    if (m_flag() == 0) {
-        LDA_16(absolute_indexed_long_16());
-    }
-    else {
-        LDA_8(absolute_indexed_long_8());
-    }
-    program_counter += 4;
+    LD( M_FLAG, &accumulator, absoluteLongIndexedX() );
 }
 
-//LDX #const    A2    Immediate    N��Z - 212
+////LDX #const    A2    Immediate    N��Z - 212
 void fA2_LDX(){
-    if (x_flag() == 0) {
-        X = immediate_16();
-        set_p_register_16(X, NEGATIVE_FLAG | ZERO_FLAG);
-        program_counter += 3;
+    if ( !( p_register & X_FLAG ) ) {
+        ++nextOperationOffset;
     }
-    else {
-        X = immediate_8();
-        set_p_register_8(X, NEGATIVE_FLAG | ZERO_FLAG);
-        program_counter += 2;
-    }
-    
+    LD( X_FLAG, &X, immediate() );
 }
 
-//LDX dp    A6    Direct Page    N��Z - 2
+////LDX dp    A6    Direct Page    N��Z - 2
 void fA6_LDX(){
-    if (x_flag() == 0) {
-        X = direct_16();
-        set_p_register_16(X, NEGATIVE_FLAG | ZERO_FLAG);
-    }
-    else {
-        X = direct_8();
-        set_p_register_8(X, NEGATIVE_FLAG | ZERO_FLAG);
-
-    }
-    program_counter += 2;
+    LD( X_FLAG, &X, direct( 0 ) );
 }
 
-//LDX addr    AE    Absolute    N��Z - 3
+////LDX addr    AE    Absolute    N��Z - 3
 void fAE_LDX(){
-    if (x_flag() == 0) {
-        X = absolute_16();
-        set_p_register_16(X, NEGATIVE_FLAG | ZERO_FLAG);
-    }
-    else {
-        X = absolute_8();
-        set_p_register_8(X, NEGATIVE_FLAG | ZERO_FLAG);
-
-    }
-    program_counter += 3;
+    LD( X_FLAG, &X, absolute( 0 ) );
 }
 
-//LDX dp, Y    B6    DP Indexed, Y    N��Z - 2
+////LDX dp, Y    B6    DP Indexed, Y    N��Z - 2
 void fB6_LDX(){
-    if (x_flag() == 0) {
-        X = direct_indexed_y_16();
-        set_p_register_16(X, NEGATIVE_FLAG | ZERO_FLAG);
-    }
-    else {
-        X = direct_indexed_y_8();
-        set_p_register_8(X, NEGATIVE_FLAG | ZERO_FLAG);
-
-    }
-    program_counter += 2;
+    LD( X_FLAG, &X, direct( Y ) );
 }
 
-//LDX addr, Y    BE    Absolute Indexed, Y    N��Z - 3
+////LDX addr, Y    BE    Absolute Indexed, Y    N��Z - 3
 void fBE_LDX(){
-    if (x_flag() == 0) {
-        X = absolute_indexed_y_16();
-        set_p_register_16(X, NEGATIVE_FLAG | ZERO_FLAG);
-    }
-    else {
-        X = absolute_indexed_y_8();
-        set_p_register_8(X, NEGATIVE_FLAG | ZERO_FLAG);
-
-    }
-    program_counter += 3;
+    LD( X_FLAG, &X, absoluteIndexedY() );
 }
 
-//LDY #const    A0    Immediate    N��Z - 2
+////LDY #const    A0    Immediate    N��Z - 2
 void fA0_LDY(){
-    if (x_flag() == 0) {
-        Y = immediate_16();
-        set_p_register_16(Y, NEGATIVE_FLAG | ZERO_FLAG);
-        program_counter += 3;
+    if ( !( p_register & X_FLAG ) ) {
+        ++nextOperationOffset;
     }
-    else {
-        Y = immediate_8();
-        set_p_register_8(Y, NEGATIVE_FLAG | ZERO_FLAG);
-        program_counter += 2;
-
-    }
+    LD( X_FLAG, &Y, immediate() );
 }
 
-//LDY dp    A4    Direct Page    N��Z - 2
+////LDY dp    A4    Direct Page    N��Z - 2
 void fA4_LDY(){
-    if (x_flag() == 0) {
-        Y = direct_16();
-        set_p_register_16(Y, NEGATIVE_FLAG | ZERO_FLAG);
-    }
-    else {
-        Y = direct_8();
-        set_p_register_8(Y, NEGATIVE_FLAG | ZERO_FLAG);
-
-    }
-    program_counter += 2;
+    LD( X_FLAG, &Y, direct( 0 ) );
 }
 
-//LDY addr    AC    Absolute    N��Z - 3
+////LDY addr    AC    Absolute    N��Z - 3
 void fAC_LDY(){
-    if (x_flag() == 0) {
-        Y = absolute_16();
-        set_p_register_16(Y, NEGATIVE_FLAG | ZERO_FLAG);
-    }
-    else {
-        Y = absolute_8();
-        set_p_register_8(Y, NEGATIVE_FLAG | ZERO_FLAG);
-
-    }
-    program_counter += 3;
+    LD( X_FLAG, &Y, absolute( 0 ) );
 }
 
-//LDY dp, X    B4    DP Indexed, X    N��Z - 2
+////LDY dp, X    B4    DP Indexed, X    N��Z - 2
 void fB4_LDY(){
-    if (x_flag() == 0) {
-        Y = direct_indexed_x_16();
-        set_p_register_16(Y, NEGATIVE_FLAG | ZERO_FLAG);
-    }
-    else {
-        Y = direct_indexed_x_8();
-        set_p_register_8(Y, NEGATIVE_FLAG | ZERO_FLAG);
-
-    }
-    program_counter += 2;
+    LD( X_FLAG, &Y, direct( X ) );
 }
 
-//LDY addr, X    BC    Absolute Indexed, X    N��Z - 3
+////LDY addr, X    BC    Absolute Indexed, X    N��Z - 3
 void fBC_LDY(){
-    if (x_flag() == 0) {
-        Y = absolute_indexed_x_16();
-        set_p_register_16(Y, NEGATIVE_FLAG | ZERO_FLAG);
-    }
-    else {
-        Y = absolute_indexed_x_8();
-        set_p_register_8(Y, NEGATIVE_FLAG | ZERO_FLAG);
-
-    }
-    program_counter += 3;
+    LD( X_FLAG, &Y, absoluteIndexedX() );
 }
 #pragma endregion
 
 #pragma region LSR
-void LSR_8( uint8_t *local_address ) {
-    uint8_t val = *local_address;
-    p_register |= CARRY_FLAG & accumulator;
-    val >>= 1;
-    *local_address = val;
-}
-void LSR_16( uint8_t *local_address ) {
-    uint16_t val = get2Byte(local_address);
-    p_register |= CARRY_FLAG & accumulator;
-    val >>= 1;
-    *local_address = val; // TODO 
+
+static inline void LSR( uint8_t *O1 ) {
+    uint16_t zero = 0x00;
+    uint16_t carry = 0x00;
+    if ( p_register & M_FLAG ) {
+        carry = ( *O1 & 0x01 ) ? CARRY_FLAG : carry;
+        *O1 =  ( *O1 >> 1 ) & 0x7F;
+        zero = ( *O1 == 0x00 ) ? ZERO_FLAG : 0x00;
+    }
+    else {
+        uint16_t value = readU16( O1 );
+        carry = ( value & 0x0001 ) ? CARRY_FLAG : carry;
+        value =  ( value >> 1 ) & 0x7FFF;
+        zero = ( value == 0x00 ) ? ZERO_FLAG : 0x00;
+        storeU16( O1, value );
+    }
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG | CARRY_FLAG ) )
+        | zero | carry;
 }
 
-//LSR dp    46    Direct Page    N��ZC    2
+////LSR dp    46    Direct Page    N��ZC    2
 void f46_LSR(){
-    if (m_flag() == 0) {
-        LSR_16( access_address( direct() ) );
-    }
-    else {
-        LSR_8( access_address( direct() ) );
-    }
-    
-    program_counter += 2;
+    LSR( direct( 0 ) );
 }
 
-//LSR A    4A    Accumulator    N��ZC    1
+////LSR A    4A    Accumulator    N��ZC    1
 void f4A_LSR(){
-    p_register |= CARRY_FLAG & accumulator;
-    accumulator = accumulator >> 1;
-    program_counter += 1;
+    LSR( (uint8_t*)&accumulator );
 }
 
-//LSR addr    4E    Absolute    N��ZC    3
+////LSR addr    4E    Absolute    N��ZC    3
 void f4E_LSR(){
-    if (m_flag() == 0) {
-        LSR_16( access_address( absolute() ) );
-    }
-    else {
-        LSR_8( access_address( absolute() ) );
-    }
-
-    program_counter += 3;
+    LSR( absolute( 0 ) );
 }
 
-//LSR dp, X    56    DP Indexed, X    N��ZC    2
+////LSR dp, X    56    DP Indexed, X    N��ZC    2
 void f56_LSR(){
-    if (m_flag() == 0) {
-        LSR_16( access_address( direct_indexed_x() ) );
-    }
-    else {
-        LSR_8( access_address( direct_indexed_x() ) );
-    }
-
-    program_counter += 2;
+    LSR( direct( X ) );
 }
 
-//LSR addr, X    5E    Absolute Indexed, X    N��ZC    3
+////LSR addr, X    5E    Absolute Indexed, X    N��ZC    3
 void f5E_LSR(){
-    if (m_flag() == 0) {
-        LSR_16( access_address( absolute_indexed_x() ) );
-    }
-    else {
-        LSR_8( access_address( absolute_indexed_x() ) );
-    }
-
-    program_counter += 3;
+    LSR( absoluteIndexedX() );
 }
 #pragma endregion
 
-//MVN srcbk, destbk    54    Block Move        3
+////MVN srcbk, destbk    54    Block Move        3
 void f54_MVN(){
-    uint8_t src_blk = immediate_8();
-    uint16_t src_addr = X;
-    program_counter++;
-    uint8_t dest_blk = immediate_8();
-    uint16_t dest_addr = Y;
-    program_counter--;
+    // TODO - bank boundaries? ANS - bank shouldn't change, offset wraps
+    // TODO - mapping boundaries?
+    // TODO - m/x flags?
+    // TODO - might be better to loop instead of memcpy
 
-    uint8_t *src_addr_local = accessAddressFromBank(src_blk, src_addr);
-    uint8_t *dest_addr_local = accessAddressFromBank(dest_blk, dest_addr);
+    uint8_t destBank = *immediate();
+    uint8_t srcBank = *immediate();
 
-    memcpy(dest_addr_local, src_addr_local, 1);
-    X++;
-    Y++;
-    accumulator--;
-    if(accumulator == 0xFFFF)
-        program_counter += 3;
+    uint8_t *src = snesMemoryMap( GetBusAddress( srcBank, X ) );
+    uint8_t *dest = snesMemoryMap( GetBusAddress( destBank, Y ) );
+    *dest = *src;
+    ++X;
+    ++Y;
+    --accumulator;
+    if ( accumulator != 0xFFFF ) {
+        nextOperationOffset = currentOperationOffset;
+    }
 }
 
-//MVP srcbk, destbk    44    Block Move        3
+////MVP srcbk, destbk    44    Block Move        3
 void f44_MVP(){
-    uint16_t bytes_to_move = accumulator + 1;
-    X -= bytes_to_move;
-    Y -= bytes_to_move;
+    // TODO - bank boundaries? ANS - bank shouldn't change, offset wraps
+    // TODO - mapping boundaries?
+    // TODO - m/x flags?
+    // TODO - might be better to loop instead of memcpy
 
-    uint8_t src_blk = immediate_8();
-    uint16_t src_addr = X;
-    program_counter++;
-    uint8_t dest_blk = immediate_8();
-    uint16_t dest_addr = Y;
+    uint8_t destBank = *immediate();
+    uint8_t srcBank = *immediate();
 
-    uint8_t *src_addr_local = accessAddressFromBank(src_blk, src_addr);
-    uint8_t *dest_addr_local = accessAddressFromBank(dest_blk, dest_addr);
-
-    memcpy(dest_addr_local, src_addr_local, bytes_to_move);
+    uint8_t *src = snesMemoryMap( GetBusAddress( srcBank, X ) );
+    uint8_t *dest = snesMemoryMap( GetBusAddress( destBank, Y ) );
+    uint16_t toMove = accumulator + 1;
+    memcpy( dest, src, toMove );
+    X -= toMove;
+    Y -= toMove;
     accumulator = 0xFFFF;
-    
-
-    program_counter += 2;
 }
 
-//NOP    EA    Implied        1
+////NOP    EA    Implied        1
 void fEA_NOP(){
-    program_counter += 1;
 }
 
 #pragma region ORA
 
-void ORA_8(uint8_t val) {
-    accumulator |= val;
-    set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-}
-void ORA_16(uint16_t val) {
-    accumulator |= val;
-    set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+static inline void ORA( uint8_t *O1 ) {
+    uint16_t zero = 0x00;
+    uint16_t negative = 0x00;
+    if ( p_register & M_FLAG ) {
+        accumulator = ( accumulator & 0xFF00 ) | ( ( accumulator & 0x00FF ) | *O1 );
+        zero = ( ( accumulator & 0x00FF ) == 0 ) ? ZERO_FLAG : zero;
+        negative = ( accumulator & 0x0080 ) ? NEGATIVE_FLAG : zero;
+    }
+    else {
+        accumulator |= readU16( O1 );
+        zero = ( accumulator == 0 ) ? ZERO_FLAG : zero;
+        negative = ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : zero;
+    }
+
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG ) )
+        | zero | negative;
 }
 
-//ORA(_dp, _X)    1    DP Indexed Indirect, X    N��Z - 2
+////ORA(_dp, _X)    1    DP Indexed Indirect, X    N��Z - 2
 void f01_ORA(){
-    if (m_flag() == 0) {
-        ORA_8(direct_indexed_indirect_16());
-    }
-    else {
-        ORA_16(direct_indexed_indirect_8());
-    }
-    program_counter += 2;
+    ORA( directIndexedXIndirect() );
 }
 
-//ORA sr, S    3    Stack Relative    N��Z - 2
+////ORA sr, S    3    Stack Relative    N��Z - 2
 void f03_ORA(){
-    if (m_flag() == 0) {
-        ORA_8(stack_relative_16());
-    }
-    else {
-        ORA_16(stack_relative_8());
-    }
-    program_counter += 2;
+    ORA( stackRelative() );
 }
 
-//ORA dp    5    Direct Page    N��Z - 2
+////ORA dp    5    Direct Page    N��Z - 2
 void f05_ORA(){
-    if (m_flag() == 0) {
-        ORA_8(direct_16());
-    }
-    else {
-        ORA_16(direct_8());
-    }
-    program_counter += 2;
+    ORA( direct( 0 ) );
 }
 
-//ORA[_dp_]    7    DP Indirect Long    N��Z - 2
+////ORA[_dp_]    7    DP Indirect Long    N��Z - 2
 void f07_ORA(){
-    if (m_flag() == 0) {
-        ORA_8(direct_indirect_long_16());
-    }
-    else {
-        ORA_16(direct_indirect_long_8());
-    }
-    program_counter += 2;
+    ORA( directIndirectLong() );
 }
 
-//ORA #const    9    Immediate    N��Z - 2
+////ORA #const    9    Immediate    N��Z - 2
 void f09_ORA(){
-    if (m_flag() == 0) {
-        ORA_8(immediate_16());
-        program_counter += 3;
+    if ( !( p_register & M_FLAG ) ) {
+        ++nextOperationOffset;
     }
-    else {
-        ORA_16(immediate_8());
-        program_counter += 2;
-    }
-    
+    ORA( immediate() );   
 }
 
-//ORA addr    0D    Absolute    N��Z - 3
+////ORA addr    0D    Absolute    N��Z - 3
 void f0D_ORA(){
-    if (m_flag() == 0) {
-        ORA_8(absolute_16());
-    }
-    else {
-        ORA_16(absolute_8());
-    }
-    program_counter += 3;
+    ORA( absolute( 0 ) );
 }
 
-//ORA long    0F    Absolute Long    N��Z - 4
+////ORA long    0F    Absolute Long    N��Z - 4
 void f0F_ORA(){
-    if (m_flag() == 0) {
-        ORA_8(absolute_long_16());
-    }
-    else {
-        ORA_16(absolute_long_8());
-    }
-    program_counter += 4;
+    ORA( absoluteLong( 0 ) );
 }
 
-//ORA(_dp_), Y    11    DP Indirect Indexed, Y    N��Z - 2
+////ORA(_dp_), Y    11    DP Indirect Indexed, Y    N��Z - 2
 void f11_ORA(){
-    if (m_flag() == 0) {
-        ORA_8(direct_indirect_indexed_16());
-    }
-    else {
-        ORA_16(direct_indirect_indexed_8());
-    }
-    program_counter += 2;
+    ORA( directIndirectIndexedY( 0 ) );
 }
 
-//ORA(_dp_)    12    DP Indirect    N��Z - 2
+////ORA(_dp_)    12    DP Indirect    N��Z - 2
 void f12_ORA(){
-    if (m_flag() == 0) {
-        ORA_8(direct_indirect_16());
-    }
-    else {
-        ORA_16(direct_indirect_8());
-    }
-    program_counter += 2;
+    ORA( directIndirect() );
 }
 
-//ORA(_sr_, S), Y    13    SR Indirect Indexed, Y    N��Z - 2
+////ORA(_sr_, S), Y    13    SR Indirect Indexed, Y    N��Z - 2
 void f13_ORA(){
-    if (m_flag() == 0) {
-        ORA_8(stack_relative_indirect_indexed_16());
-    }
-    else {
-        ORA_16(stack_relative_indirect_indexed_8());
-    }
-    program_counter += 2;
+    ORA( stackRelativeIndirectIndexedY() );
 }
 
-//ORA dp, X    15    DP Indexed, X    N��Z - 2
+////ORA dp, X    15    DP Indexed, X    N��Z - 2
 void f15_ORA(){
-    if (m_flag() == 0) {
-        ORA_8(direct_indexed_x_16());
-    }
-    else {
-        ORA_16(direct_indexed_x_8());
-    }
-    program_counter += 2;
+    ORA( direct( X ) );
 }
 
-//ORA[_dp_], Y    17    DP Indirect Long Indexed, Y    N��Z - 2
+////ORA[_dp_], Y    17    DP Indirect Long Indexed, Y    N��Z - 2
 void f17_ORA(){
-    if (m_flag() == 0) {
-        ORA_8(direct_indirect_long_16());
-    }
-    else {
-        ORA_16(direct_indirect_long_8());
-    }
-    program_counter += 2;
+    ORA( directIndirectIndexedYLong() );
 }
 
-//ORA addr, Y    19    Absolute Indexed, Y    N��Z - 3
+////ORA addr, Y    19    Absolute Indexed, Y    N��Z - 3
 void f19_ORA(){
-    if (m_flag() == 0) {
-        ORA_8(absolute_indexed_y_16());
-    }
-    else {
-        ORA_16(absolute_indexed_y_8());
-    }
-    program_counter += 3;
+    ORA( absoluteIndexedY() );
 }
 
-//ORA addr, X    1D    Absolute Indexed, X    N��Z - 3
+////ORA addr, X    1D    Absolute Indexed, X    N��Z - 3
 void f1D_ORA(){
-    if (m_flag() == 0) {
-        ORA_8(absolute_indexed_x_16());
-    }
-    else {
-        ORA_16(absolute_indexed_x_8());
-    }
-    program_counter += 3;
+    ORA( absoluteIndexedX() );
 }
 
-//ORA long, X    1F    Absolute Long Indexed, X    N��Z - 4
+////ORA long, X    1F    Absolute Long Indexed, X    N��Z - 4
 void f1F_ORA(){
-    if (m_flag() == 0) {
-        ORA_8(absolute_indexed_long_16());
-    }
-    else {
-        ORA_16(absolute_indexed_long_8());
-    }
-    program_counter += 4;
+    ORA( absoluteLongIndexedX() );
 }
 #pragma endregion
 
 #pragma region stack
-//PEA addr    F4    Stack(Absolute)        3
+
+////PEA addr    F4    Stack(Absolute)        3
 void fF4_PEA(){
-    uint16_t operand = immediate_16();
-    push_to_stack_16( operand );
-    program_counter += 3;
+    pushU16( readU16( immediate() ) );
+    ++program_counter;
 }
 
-//PEI(dp)    D4    Stack(DP Indirect)        2
+////PEI(dp)    D4    Stack(DP Indirect)        2
 void fD4_PEI(){
-    uint16_t operand = immediate_8();
-    push_to_stack_16( operand );
-    program_counter += 2;
+    pushU16( readU16( direct( 0 ) ) );
 }
 
-//PER label    62    Stack(PC Relative Long)        3
+////PER label    62    Stack(PC Relative Long)        3
 void f62_PER(){
-    uint16_t operand = absolute_16() + program_counter;
-    push_to_stack_16( operand );
-    program_counter += 3;
+    // TODO - verify signed/unsigned appropriateness
+    pushU16( nextOperationOffset + (int16_t)readU16( immediate() ) );
+    ++program_counter;
 }
 
-//PHA    48    Stack(Push)        1
+////PHA    48    Stack(Push)        1
 void f48_PHA(){
-    if(m_flag() == 0)
-        push_to_stack_16( accumulator );
-    else
-        push_to_stack_8( accumulator );
-
-    program_counter += 1;
+    if( p_register & M_FLAG ) {
+        pushU8( (uint8_t)( accumulator & 0x00FF ) );
+    }
+    else {
+        pushU16( accumulator );
+    }
 }
 
-//PHB    8B    Stack(Push)        1
+////PHB    8B    Stack(Push)        1
 void f8B_PHB(){
-    push_to_stack_8( data_bank_register );
-    program_counter++;
+    pushU8( data_bank_register );
 }
 
-//PHD    0B    Stack(Push)        1
+////PHD    0B    Stack(Push)        1
 void f0B_PHD(){
-    push_to_stack_16( direct_page );
-    program_counter++;
+    pushU16( direct_page );
 }
 
-//PHK    4B    Stack(Push)        1
+////PHK    4B    Stack(Push)        1
 void f4B_PHK(){
-    push_to_stack_8( (uint8_t) program_bank_register );
-    program_counter++;
+    pushU8( (uint8_t) program_bank_register );
 }
 
-//PHP    8    Stack(Push)        1
+////PHP    8    Stack(Push)        1
 void f08_PHP(){
-    push_to_stack_16( p_register );
-    program_counter++;
+    pushU16( (uint8_t) ( p_register & 0x00FF ) );
 }
 
-//PHX    DA    Stack(Push)        1
+////PHX    DA    Stack(Push)        1
 void fDA_PHX(){
-    if (x_flag() == 0)
-        push_to_stack_16( X );
-    else
-        push_to_stack_8( X );
-
-    program_counter += 1;
+    if ( p_register & X_FLAG ) {
+        pushU8( (uint8_t) ( X & 0x00FF ) );
+    }
+    else {
+        pushU16( X );
+    }
 }
 
-//PHY    5A    Stack(Push)        1
+////PHY    5A    Stack(Push)        1
 void f5A_PHY(){
-    if (x_flag() == 0)
-        push_to_stack_16( Y );
-    else
-        push_to_stack_8( Y );
-
-    program_counter += 1;
+    if ( p_register & X_FLAG ) {
+        pushU8( (uint8_t) ( Y & 0x00FF ) );
+    }
+    else {
+        pushU16( Y );
+    }
 }
 
-//PLA    68    Stack(Pull)    N��Z - 1
+static void PL( uint8_t *target, bool halfWord ) {
+    uint16_t zero = 0x00;
+    uint16_t negative = 0x00;
+
+    if ( halfWord ) {
+        *target = popU8();
+        zero = ( *target == 0 ) ? ZERO_FLAG : zero;
+        negative = ( *target & 0x80 ) ? NEGATIVE_FLAG : negative;
+    }
+    else {
+        uint16_t value = popU16();
+        storeU16( target, value );
+        zero = ( value == 0 ) ? ZERO_FLAG : zero;
+        negative = ( value & 0x8000 ) ? NEGATIVE_FLAG : negative;
+    }
+    p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG ) )
+        | zero | negative;
+}
+
+////PLA    68    Stack(Pull)    N��Z - 1
 void f68_PLA(){
-    if (m_flag() == 0) {
-        accumulator = pull_from_stack_16();
-        set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-    }
-    else {
-        accumulator &= 0xFF00;
-        accumulator |= pull_from_stack_8();
-        set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-    }
-
-    program_counter += 1;
+    PL( (uint8_t*) &accumulator, p_register & M_FLAG );
 }
 
-//PLB    AB    Stack(Pull)    N��Z - 1
+////PLB    AB    Stack(Pull)    N��Z - 1
 void fAB_PLB(){
-    uint8_t val = pull_from_stack_8();
-    data_bank_register = val;
-    set_p_register_8(val, NEGATIVE_FLAG | ZERO_FLAG);
-    program_counter += 1;
+    PL( (uint8_t*) &data_bank_register, true );
 }
 
-//PLD    2B    Stack(Pull)    N��Z - 1
+////PLD    2B    Stack(Pull)    N��Z - 1
 void f2B_PLD(){
-    uint16_t val = pull_from_stack_16();
-    direct_page = val;
-    set_p_register_8(val, NEGATIVE_FLAG | ZERO_FLAG);
-    program_counter += 1;
+    PL( (uint8_t*) &direct_page, false );
 }
 
-//PLP    28    Stack(Pull)    N��Z - 1
+////PLP    28    Stack(Pull)    N��Z - 1
 void f28_PLP(){
-    p_register = pull_from_stack_16();
-    program_counter += 1;
+    PL( (uint8_t*) &p_register, true );
 }
 
-//PLX    FA    Stack(Pull)    N��Z - 1
+////PLX    FA    Stack(Pull)    N��Z - 1
 void fFA_PLX(){
-    if (x_flag() == 0) {
-        X = pull_from_stack_16();
-        set_p_register_16(X, NEGATIVE_FLAG | ZERO_FLAG);
-    }
-    else {
-        X = pull_from_stack_8();
-        set_p_register_8(X, NEGATIVE_FLAG | ZERO_FLAG);
-    }
-
-    program_counter += 1;
+    PL( (uint8_t*) &X, p_register & X_FLAG );
 }
 
-//PLY    7A    Stack(Pull)    N��Z - 1
+////PLY    7A    Stack(Pull)    N��Z - 1
 void f7A_PLY(){
-    if (x_flag() == 0) {
-        Y = pull_from_stack_16();
-        set_p_register_16(Y, NEGATIVE_FLAG | ZERO_FLAG);
-    }
-    else {
-        Y = pull_from_stack_8();
-        set_p_register_8(Y, NEGATIVE_FLAG | ZERO_FLAG);
-    }
-
-    program_counter += 1;
+    PL( (uint8_t*) &Y, p_register & X_FLAG );
 }
 #pragma endregion
 
 #pragma region rot
 
-void ROL_8(uint8_t* addr) {
-    uint8_t val = *addr;
-    uint8_t c_flag = p_register & CARRY_FLAG;
-    uint8_t new_c_flag = (val & 0x80) ? 0x01 : 0x00;
-    p_register = ( p_register & ~CARRY_FLAG ) | new_c_flag;
-    val <<= 1;
-    val |= c_flag;
-    *addr = val;
-    set_p_register_8(val, NEGATIVE_FLAG | ZERO_FLAG);
-}
-void ROL_16(uint8_t* addr) {
-    uint16_t val = get2Byte(addr);
-    uint8_t c_flag = p_register & CARRY_FLAG;
-    uint8_t new_c_flag = val & 0x80000000;
-    p_register = ( p_register & ~CARRY_FLAG ) | new_c_flag;
-    val <<= 1;
-    val |= c_flag;
-    store2Byte_local(addr, val);
-    set_p_register_16(val, NEGATIVE_FLAG | ZERO_FLAG);
+static inline void ROL( uint8_t *O1 ) {
+    uint16_t zero = 0x00;
+    uint16_t negative = 0x00;
+    uint16_t carry = 0x00;
+
+    if ( p_register & M_FLAG ) {
+        carry = ( *O1 & 0x80 ) ? CARRY_FLAG : carry;
+        *O1 = ( *O1 << 1 ) | ( ( p_register & CARRY_FLAG ) ? 0x01 : 0x00 );
+        negative = ( *O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
+        zero = ( *O1 == 0 ) ? ZERO_FLAG : zero;
+    }
+    else {
+        uint16_t value = readU16( O1 );
+        carry = ( value & 0x8000 ) ? CARRY_FLAG : carry;
+        value = ( value << 1 ) | ( ( p_register & CARRY_FLAG ) ? 0x01 : 0x00 );
+        negative = ( value & 0x8000 ) ? NEGATIVE_FLAG : negative;
+        zero = ( value == 0 ) ? ZERO_FLAG : zero;
+        storeU16( O1, value );
+    }
+
+    p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG | CARRY_FLAG ) )
+        | zero | negative | carry;
 }
 
-void ROR_8(uint8_t* addr) {
-    uint8_t val = *addr;
-    uint8_t c_flag = p_register & CARRY_FLAG;
-    uint8_t new_c_flag = val & CARRY_FLAG;
-    p_register = ( p_register & ~CARRY_FLAG ) | new_c_flag;
-    c_flag <<= 7;
-    val >>= 1;
-    val |= c_flag;
-    *addr = val;
-    set_p_register_8(val, NEGATIVE_FLAG | ZERO_FLAG);
-}
-void ROR_16(uint8_t* addr) {
-    uint16_t val = get2Byte(addr);
-    uint16_t c_flag = p_register & CARRY_FLAG;
-    uint8_t new_c_flag = val & CARRY_FLAG;
-    p_register = ( p_register & ~CARRY_FLAG ) | new_c_flag;
-    c_flag <<= 15;
-    val >>= 1;
-    val |= c_flag;
-    store2Byte_local(addr, val);
-    set_p_register_16(val, NEGATIVE_FLAG | ZERO_FLAG);
+static inline void ROR( uint8_t *O1 ) {
+    uint16_t zero = 0x00;
+    uint16_t negative = 0x00;
+    uint16_t carry = 0x00;
+
+    if ( p_register & M_FLAG ) {
+        carry = ( *O1 & 0x80 ) ? CARRY_FLAG : carry;
+        *O1 = ( *O1 >> 1 ) | ( ( p_register & CARRY_FLAG ) ? 0x80 : 0x00 );
+        negative = ( *O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
+        zero = ( *O1 == 0 ) ? ZERO_FLAG : zero;
+    }
+    else {
+        uint16_t value = readU16( O1 );
+        carry = ( value & 0x8000 ) ? CARRY_FLAG : carry;
+        value = ( value >> 1 ) | ( ( p_register & CARRY_FLAG ) ? 0x8000 : 0x00 );
+        negative = ( value & 0x8000 ) ? NEGATIVE_FLAG : negative;
+        zero = ( value == 0 ) ? ZERO_FLAG : zero;
+        storeU16( O1, value );
+    }
+
+    p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG | CARRY_FLAG ) )
+        | zero | negative | carry;
 }
 
-//ROL dp    26    Direct Page    N��ZC    2
+////ROL dp    26    Direct Page    N��ZC    2
 void f26_ROL(){
-    if (m_flag() == 0) {
-        ROL_16(accessAddressFromBank(data_bank_register, direct()));
-    }
-    else {
-        ROL_8(accessAddressFromBank(data_bank_register, direct()));
-    }
-    program_counter += 2;
+    ROL( direct( 0 ) );
 }
 
-//ROL A    2A    Accumulator    N��ZC    1
+////ROL A    2A    Accumulator    N��ZC    1
 void f2A_ROL(){
-    if (m_flag() == 0) {
-        ROL_16( (uint8_t*) &accumulator );
-    }
-    else {
-        ROL_8( (uint8_t*) &accumulator );
-    }
-    program_counter += 1;
+    ROL( (uint8_t*)&accumulator );
 }
 
-//ROL addr    2E    Absolute    N��ZC    3
+////ROL addr    2E    Absolute    N��ZC    3
 void f2E_ROL(){
-    if (m_flag() == 0) {
-        ROL_16(access_address(absolute()));
-    }
-    else {
-        ROL_8(access_address(absolute()));
-    }
-    program_counter += 3;
+    ROL( absolute( 0 ) );
 }
 
-//ROL dp, X    36    DP Indexed, X    N��ZC    2
+////ROL dp, X    36    DP Indexed, X    N��ZC    2
 void f36_ROL(){
-    if (m_flag() == 0) {
-        ROL_16(access_address(direct_indexed_x()));
-    }
-    else {
-        ROL_8(access_address(direct_indexed_x()));
-    }
-    program_counter += 3;
+    ROL( direct( X ) );
 }
 
-//ROL addr, X    3E    Absolute Indexed, X    N��ZC    3
+////ROL addr, X    3E    Absolute Indexed, X    N��ZC    3
 void f3E_ROL(){
-    if (m_flag() == 0) {
-        ROL_16(accessAddressFromBank(data_bank_register, absolute_indexed_x()));
-    }
-    else {
-        ROL_8(accessAddressFromBank(data_bank_register, absolute_indexed_x()));
-    }
-    program_counter += 3;
+    ROL( absoluteIndexedX() );
 }
 
-//ROR dp    66    Direct Page    N��ZC    2
+////ROR dp    66    Direct Page    N��ZC    2
 void f66_ROR(){
-    if (m_flag() == 0) {
-        ROR_16(accessAddressFromBank(data_bank_register, direct()));
-    }
-    else {
-        ROR_8(accessAddressFromBank(data_bank_register, direct()));
-    }
-    program_counter += 2;
+    ROR( direct( 0 ) );
 }
 
-//ROR A    6A    Accumulator    N��ZC    1
+////ROR A    6A    Accumulator    N��ZC    1
 void f6A_ROR(){
-    if (m_flag() == 0) {
-        ROR_16( (uint8_t*) &accumulator);
-    }
-    else {
-        ROR_8( (uint8_t*) &accumulator);
-    }
-    program_counter += 1;
+    ROR( (uint8_t*)&accumulator );
 }
 
-//ROR addr    6E    Absolute    N��ZC    3
+////ROR addr    6E    Absolute    N��ZC    3
 void f6E_ROR(){
-    if (m_flag() == 0) {
-        ROR_16(access_address(absolute()));
-    }
-    else {
-        ROR_8(access_address(absolute()));
-    }
-    program_counter += 3;
+    ROR( absolute( 0 ) );
 }
 
-//ROR dp, X    76    DP Indexed, X    N��ZC    2
+////ROR dp, X    76    DP Indexed, X    N��ZC    2
 void f76_ROR(){
-    if (m_flag() == 0) {
-        ROR_16(access_address(direct_indexed_x()));
-    }
-    else {
-        ROR_8(access_address(direct_indexed_x()));
-    }
-    program_counter += 3;
+    ROR( direct( X ) );
 }
 
-//ROR addr, X    7E    Absolute Indexed, X    N��ZC    3
+////ROR addr, X    7E    Absolute Indexed, X    N��ZC    3
 void f7E_ROR(){
-    if (m_flag() == 0) {
-        ROR_16(accessAddressFromBank(data_bank_register, absolute_indexed_x()));
-    }
-    else {
-        ROR_8(accessAddressFromBank(data_bank_register, absolute_indexed_x()));
-    }
-    program_counter += 3;
+    ROR( absoluteIndexedX() );
 }
 
 #pragma endregion
 
 #pragma region returns
-//RTI    40    Stack(RTI)    NVMXDIZC    1
+// TODO - might need to increment PC here?
+
+////RTI    40    Stack(RTI)    NVMXDIZC    1
 void f40_RTI(){
-    p_register = pull_from_stack_16();
-    if (m_flag() == 0) {
-        uint16_t pc_addr = pull_from_stack_16();
-        uint32_t bank = pull_from_stack_8();
-        bank <<= 16;
-        bank |= pc_addr;
-        program_counter = bank;
-    }
-    else {
-        uint16_t pc_addr = pull_from_stack_16();
-        uint32_t bank = program_bank_register;
-        bank |= pc_addr;
-        program_counter = bank;
+    // TODO - P reg or PC first?
+    // TODO - M/X flags might not be affected in E mode
+    p_register = popU8();
+    nextOperationOffset = popU16();
+    if ( !inEmulationMode ) {
+        program_bank_register = popU8();
     }
 }
 
-//RTL    6B    Stack(RTL)        1
+////RTL    6B    Stack(RTL)        1
 void f6B_RTL(){
-    uint16_t addr = pull_from_stack_16() + 1;
-    uint8_t bank = pull_from_stack_8();
-    program_bank_register = bank;
-    program_counter = addr;
+    nextOperationOffset = popU16() + 1;
+    program_bank_register = popU8();
 }
 
-//RTS    60    Stack(RTS)        1
+////RTS    60    Stack(RTS)        1
 void f60_RTS(){
-    uint16_t addr = pull_from_stack_16() + 1;
-    program_counter = addr;
+    nextOperationOffset = popU16() + 1;
 }
 
 #pragma endregion
 
 #pragma region SBC
-void SBC_8(uint8_t val) {
-    accumulator = accumulator - val - 1 + (p_register & CARRY_FLAG);
-    set_p_register_8(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+static inline void SBC( uint8_t *O1 ) {
+    // TODO - Implement this properly (set carry, overflow, do BCD)
+    uint8_t carry = ( p_register & CARRY_FLAG ) ? 0x00 : 0x01;
+    uint16_t negative = 0x00;
+    uint16_t overflow = 0x00;
+    uint16_t zero = 0x00;
+
+    if ( p_register & M_FLAG ) {
+        uint8_t value = *O1;
+        uint8_t accValue = (uint8_t) ( accumulator & 0x00FF );
+        uint8_t result = 0x00;
+        
+        if ( p_register & DECIMAL_FLAG ) {
+
+        }
+        else {
+            result = accValue - value - carry;
+        }
+
+        accumulator = ( accumulator & 0xFF00 ) | (uint16_t) value;
+        negative = ( value & 0x80 ) ? NEGATIVE_FLAG : 0x00;
+        zero = ( value == 0x00 ) ? ZERO_FLAG : 0x00;
+        *O1 = result;
+    }
+    else {
+        uint16_t value = readU16( O1 );
+        uint16_t result = 0x00;
+
+        if ( p_register & DECIMAL_FLAG ) {
+
+        }
+        else {
+            result = accumulator - value - carry;
+        }
+
+        accumulator = result;
+        negative = ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : 0x00;
+        zero = ( accumulator == 0x00 ) ? ZERO_FLAG : 0x00;
+        storeU16( O1, result );
+    }
+
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG | OVERFLOW_FLAG ) )
+        | zero | negative | overflow;
 }
 
-void SBC_16(uint16_t val) {
-    accumulator = accumulator - val - 1 + (p_register & CARRY_FLAG);
-    set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-}
-
-//SBC(_dp, _X)    E1    DP Indexed Indirect, X    NV� - ZC    2
+////SBC(_dp, _X)    E1    DP Indexed Indirect, X    NV� - ZC    2
 void fE1_SBC(){
-    if (m_flag() == 0) {
-        SBC_16(direct_indexed_indirect_16());
-    }
-    else {
-        SBC_8(direct_indexed_indirect_8());
-    }
-    program_counter += 2;
+    SBC( directIndexedXIndirect() );
 
 }
 
-//SBC sr, S    E3    Stack Relative    NV� - ZC    2
+////SBC sr, S    E3    Stack Relative    NV� - ZC    2
 void fE3_SBC(){
-    if (m_flag() == 0) {
-        SBC_16(stack_relative_16());
-    }
-    else {
-        SBC_8(stack_relative_8());
-    }
-    program_counter += 2;
+    SBC( stackRelative() );
 }
 
-//SBC dp    E5    Direct Page    NV� - ZC    2
+////SBC dp    E5    Direct Page    NV� - ZC    2
 void fE5_SBC(){
-    if (m_flag() == 0) {
-        SBC_16(direct_16());
-    }
-    else {
-        SBC_8(direct_8());
-    }
-    program_counter += 2;
+    SBC( direct( 0 ) );
 }
 
-//SBC[_dp_]    E7    DP Indirect Long    NV� - ZC    2
+////SBC[_dp_]    E7    DP Indirect Long    NV� - ZC    2
 void fE7_SBC(){
-    if (m_flag() == 0) {
-        SBC_16(direct_indirect_long_16());
-    }
-    else {
-        SBC_8(direct_indirect_long_8());
-    }
-    program_counter += 2;
+    SBC( directIndirectLong() );
 }
 
-//SBC #const    E9    Immediate    NV� - ZC    2
+////SBC #const    E9    Immediate    NV� - ZC    2
 void fE9_SBC(){
-    if (m_flag() == 0) {
-        SBC_16(immediate_16());
-        program_counter += 3;
+    if ( !( p_register & M_FLAG ) ) {
+        ++nextOperationOffset;
     }
-    else {
-        SBC_8(immediate_8());
-        program_counter += 2;
-    }
-    
+    SBC( immediate() );
 }
 
-//SBC addr    ED    Absolute    NV� - ZC    3
+////SBC addr    ED    Absolute    NV� - ZC    3
 void fED_SBC(){
-    if (m_flag() == 0) {
-        SBC_16(absolute_16());
-    }
-    else {
-        SBC_8(absolute_8());
-    }
-    program_counter += 3;
+    SBC( absolute( 0 ) );
 }
 
-//SBC long    EF    Absolute Long    NV� - ZC    4
+////SBC long    EF    Absolute Long    NV� - ZC    4
 void fEF_SBC(){
-    if (m_flag() == 0) {
-        SBC_16(absolute_long_16());
-    }
-    else {
-        SBC_8(absolute_long_8());
-    }
-    program_counter += 4;
+    SBC( absoluteLong( 0 ) );
 }
 
-//SBC(_dp_), Y    F1    DP Indirect Indexed, Y    NV� - ZC    2
+////SBC(_dp_), Y    F1    DP Indirect Indexed, Y    NV� - ZC    2
 void fF1_SBC(){
-    if (m_flag() == 0) {
-        SBC_16(direct_indirect_indexed_16());
-    }
-    else {
-        SBC_8(direct_indirect_indexed_8());
-    }
-    program_counter += 2;
+    SBC( directIndirectIndexedY() );
 }
 
-//SBC(_dp_)    F2    DP Indirect    NV� - ZC    2
+////SBC(_dp_)    F2    DP Indirect    NV� - ZC    2
 void fF2_SBC(){
-    if (m_flag() == 0) {
-        SBC_16(direct_indirect_16());
-    }
-    else {
-        SBC_8(direct_indirect_8());
-    }
-    program_counter += 2;
+    SBC( directIndirect() );
 }
 
-//SBC(_sr_, S), Y    F3    SR Indirect Indexed, Y    NV� - ZC    2
+////SBC(_sr_, S), Y    F3    SR Indirect Indexed, Y    NV� - ZC    2
 void fF3_SBC(){
-    if (m_flag() == 0) {
-        SBC_16(stack_relative_indirect_indexed_16());
-    }
-    else {
-        SBC_8(stack_relative_indirect_indexed_8());
-    }
-    program_counter += 2;
+    SBC( stackRelativeIndirectIndexedY() );
 }
 
-//SBC dp, X    F5    DP Indexed, X    NV� - ZC    2
+////SBC dp, X    F5    DP Indexed, X    NV� - ZC    2
 void fF5_SBC(){
-    if (m_flag() == 0) {
-        SBC_16(direct_indexed_x_16());
-    }
-    else {
-        SBC_8(direct_indexed_x_8());
-    }
-    program_counter += 2;
+    SBC( direct( X  ) );
 }
 
-//SBC[_dp_], Y    F7    DP Indirect Long Indexed, Y    NV� - ZC    2
+////SBC[_dp_], Y    F7    DP Indirect Long Indexed, Y    NV� - ZC    2
 void fF7_SBC(){
-    if (m_flag() == 0) {
-        SBC_16(direct_indirect_indexed_long_16());
-    }
-    else {
-        SBC_8(direct_indirect_indexed_long_8());
-    }
-    program_counter += 2;
+    SBC( directIndirectIndexedYLong() );
 }
 
-//SBC addr, Y    F9    Absolute Indexed, Y    NV� - ZC    3
+////SBC addr, Y    F9    Absolute Indexed, Y    NV� - ZC    3
 void fF9_SBC(){
-    if (m_flag() == 0) {
-        SBC_16(absolute_indexed_y_16());
-    }
-    else {
-        SBC_8(absolute_indexed_y_8());
-    }
-    program_counter += 3;
+    SBC( absoluteIndexedY() );
 }
 
-//SBC addr, X    FD    Absolute Indexed, X    NV� - ZC    3
+////SBC addr, X    FD    Absolute Indexed, X    NV� - ZC    3
 void fFD_SBC(){
-    if (m_flag() == 0) {
-        SBC_16(absolute_indexed_x_16());
-    }
-    else {
-        SBC_8(absolute_indexed_x_8());
-    }
-    program_counter += 3;
+    SBC( absoluteIndexedX() );
 }
 
-//SBC long, X    FF    Absolute Long Indexed, X    NV� - ZC    4
+////SBC long, X    FF    Absolute Long Indexed, X    NV� - ZC    4
 void fFF_SBC(){
-    if (m_flag() == 0) {
-        SBC_16(absolute_indexed_long_16());
-    }
-    else {
-        SBC_8(absolute_indexed_long_8());
-    }
-    program_counter += 4;
+    SBC( absoluteLongIndexedX() );
 }
 #pragma endregion
 
 #pragma region p_register
-//REP #const    C2    Immediate    NVMXDIZC    2
+////REP #const    C2    Immediate    NVMXDIZC    2
 void fC2_REP() {
-    uint8_t operand = immediate_8();
+    uint8_t operand = *immediate();
     p_register &= ~operand;
-    program_counter += 2;
 }
 
-//SEC    38    Implied    �� - C    1
+////SEC    38    Implied    �� - C    1
 void f38_SEC(){
     p_register |= CARRY_FLAG;
-    program_counter++;
 }
 
-//SED    F8    Implied    � - D�    1
+////SED    F8    Implied    � - D�    1
 void fF8_SED(){
     p_register |= DECIMAL_FLAG;
-    program_counter++;
 }
 
-//SEI    78    Implied    ��I�    1
+////SEI    78    Implied    ��I�    1
 void f78_SEI(){
     p_register |= INTERRUPT_FLAG;
-    program_counter++;
 }
 
-//SEP    E2    Immediate    NVMXDIZC    2
+////SEP    E2    Immediate    NVMXDIZC    2
 void fE2_SEP(){
-    uint8_t operand = immediate_8();
+    uint8_t operand = *immediate();
     p_register |= operand;
-    if (operand & X_FLAG) {
+    if ( operand & X_FLAG ) {
+        // Ground truth doesn't clear high-byte, so comment out for now
         X &= 0x00FF;
         Y &= 0x00FF;
     }
-    program_counter += 2;
 }
 #pragma endregion
 
 #pragma region store
 
-void STA_8(uint8_t* local_addr) {
-    if (is_reserved(local_addr))
-        return;
-    *local_addr = accumulator;
+static inline void STA( uint8_t *O1 ) {
+    if ( p_register & M_FLAG ) {
+        *O1 = (uint8_t)( accumulator & 0x00FF );
+    }
+    else {
+        storeU16( O1, accumulator );
+    }
 }
 
-void STA_16(uint8_t* local_addr) {
-    if (is_reserved(local_addr))
-        return;
-    store2Byte_local(local_addr, accumulator);
-}
-
-//STA(_dp, _X)    81    DP Indexed Indirect, X        2
+////STA(_dp, _X)    81    DP Indexed Indirect, X        2
 void f81_STA(){
-    uint8_t *addr = access_address(direct_indexed_indirect());
-    if (m_flag() == 0)
-        STA_16(addr);
-    else
-        STA_8(addr);
-
-    program_counter += 2;
+    STA( directIndexedXIndirect() );
 }
 
-//STA sr, S    83    Stack Relative        2
+////STA sr, S    83    Stack Relative        2
 void f83_STA(){
-    uint8_t *addr = accessAddressFromBank(data_bank_register >> 16 ,stack_relative());
-    if (m_flag() == 0)
-        STA_16(addr);
-    else
-        STA_8(addr);
-
-    program_counter += 2;
+    STA( stackRelative() );
 }
 
-//STA dp    85    Direct Page        2
+////STA dp    85    Direct Page        2
 void f85_STA(){
-    uint8_t *addr = accessAddressFromBank(data_bank_register >> 16, direct());
-    if (m_flag() == 0)
-        STA_16(addr);
-    else
-        STA_8(addr);
-
-    program_counter += 2;
+    STA( direct( 0 ) );
 }
 
-//STA[_dp_]    87    DP Indirect Long        2
+////STA[_dp_]    87    DP Indirect Long        2
 void f87_STA(){
-    uint8_t *addr = access_address(direct_indirect_long());
-    if (m_flag() == 0)
-        STA_16(addr);
-    else
-        STA_8(addr);
-
-    program_counter += 2;
+    STA( directIndirectLong() );
 }
 
-//STA addr    8D    Absolute        3
+////STA addr    8D    Absolute        3
 void f8D_STA(){
-    uint8_t *addr = access_address(absolute());
-    if (m_flag() == 0)
-        STA_16(addr);
-    else
-        STA_8(addr);
-
-    program_counter += 3;
+    STA( absolute( 0 ) );
 }
 
-//STA long    8F    Absolute Long        4
+////STA long    8F    Absolute Long        4
 void f8F_STA(){
-    uint8_t *addr = access_address( absolute_long());
-    if (m_flag() == 0)
-        STA_16(addr);
-    else
-        STA_8(addr);
-
-    program_counter += 4;
+    STA( absoluteLong( 0 ) );
 }
 
-//STA(_dp_), Y    91    DP Indirect Indexed, Y        2
+////STA(_dp_), Y    91    DP Indirect Indexed, Y        2
 void f91_STA(){
-    uint8_t *addr = access_address(direct_indirect_indexed());
-    if (m_flag() == 0)
-        STA_16(addr);
-    else
-        STA_8(addr);
-
-    program_counter += 2;
+    STA( directIndirectIndexedY( 0 ) );
 }
 
-//STA(_dp_)    92    DP Indirect        2
+////STA(_dp_)    92    DP Indirect        2
 void f92_STA(){
-    uint8_t *addr = access_address(direct_indirect_indexed());
-    if (m_flag() == 0)
-        STA_16(addr);
-    else
-        STA_8(addr);
-
-    program_counter += 2;
+    STA( directIndirect() );
 }
 
-//STA(_sr_, S), Y    93    SR Indirect Indexed, Y        2
+////STA(_sr_, S), Y    93    SR Indirect Indexed, Y        2
 void f93_STA(){
-    uint8_t *addr = access_address(direct_indirect_indexed());
-    if (m_flag() == 0)
-        STA_16(addr);
-    else
-        STA_8(addr);
-
-    program_counter += 2;
+    STA( stackRelativeIndirectIndexedY() );
 }
 
-//STA dpX    95    DP Indexed, X        2
+////STA dpX    95    DP Indexed, X        2
 void f95_STA(){
-    uint8_t *addr = access_address(direct_indexed_x());
-    if (m_flag() == 0)
-        STA_16(addr);
-    else
-        STA_8(addr);
-
-    program_counter += 2;
+    STA( direct( X ) );
 }
 
-//STA[_dp_], Y    97    DP Indirect Long Indexed, Y        2
+////STA[_dp_], Y    97    DP Indirect Long Indexed, Y        2
 void f97_STA(){
-    uint8_t *addr = access_address(direct_indirect_indexed_long());
-    if (m_flag() == 0)
-        STA_16(addr);
-    else
-        STA_8(addr);
-
-    program_counter += 2;
+    STA( directIndirectIndexedYLong() );
 }
 
-//STA addr, Y    99    Absolute Indexed, Y        3
+////STA addr, Y    99    Absolute Indexed, Y        3
 void f99_STA(){
-    uint8_t *addr = accessAddressFromBank(data_bank_register >> 16, absolute_indexed_y());
-    if (m_flag() == 0)
-        STA_16(addr);
-    else
-        STA_8(addr);
-
-    program_counter += 3;
+    STA( absoluteIndexedY() );
 }
 
-//STA addr, X    9D    Absolute Indexed, X        3
+////STA addr, X    9D    Absolute Indexed, X        3
 void f9D_STA(){
-    uint8_t *addr = accessAddressFromBank(data_bank_register >> 16, absolute_indexed_x());
-    if (m_flag() == 0)
-        STA_16(addr);
-    else
-        STA_8(addr);
-
-    program_counter += 3;
+    STA( absoluteIndexedX() );
 }
 
-//STA long, X    9F    Absolute Long Indexed, X        4
+////STA long, X    9F    Absolute Long Indexed, X        4
 void f9F_STA(){
-    uint8_t *addr = access_address(absolute_indexed_long() );
-    if (m_flag() == 0)
-        STA_16(addr);
-    else
-        STA_8(addr);
-
-    program_counter += 4;
+    STA( absoluteLongIndexedX() );
 }
 
-void STN_8(uint8_t* local_addr, uint8_t val) {
-    *local_addr = val;
+static inline void STN( uint16_t registerValue, uint8_t *O1 ) {
+    if ( p_register & X_FLAG ) {
+        *O1 = (uint8_t)( registerValue & 0x00FF );
+    }
+    else {
+        storeU16( O1, registerValue );
+    }
 }
 
-void STN_16(uint8_t* local_addr, uint16_t val) {
-    store2Byte_local(local_addr, val);
-}
-
-//STX dp    86    Direct Page        2
+////STX dp    86    Direct Page        2
 void f86_STX(){
-    uint8_t *addr = accessAddressFromBank(0x00, direct());
-    if (x_flag() == 0)
-        STN_16(addr, X);
-    else
-        STN_8(addr, X);
-
-    program_counter += 2;
+    STN( X, direct( 0 ) );
 }
 
-//STX addr    8E    Absolute        3
+////STX addr    8E    Absolute        3
 void f8E_STX(){
-    uint8_t *addr = access_address(absolute());
-    if (x_flag() == 0)
-        STN_16(addr, X);
-    else
-        STN_8(addr, X);
-
-    program_counter += 3;
+    STN( X, absolute( 0 ) );
 }
 
-//STX dp, Y    96    DP Indexed, Y        2
+////STX dp, Y    96    DP Indexed, Y        2
 void f96_STX(){
-    uint8_t *addr = access_address(direct_indexed_y());
-    if (x_flag() == 0)
-        STN_16(addr, X);
-    else
-        STN_8(addr, X);
-
-    program_counter += 2;
+    STN( X, direct( Y ) );
 }
 
-//STY dp    84    Direct Page        2
+////STY dp    84    Direct Page        2
 void f84_STY(){
-    uint8_t *addr = accessAddressFromBank(0x00, direct());
-    if (x_flag() == 0)
-        STN_16(addr, Y);
-    else
-        STN_8(addr, Y);
-
-    program_counter += 2;
+    STN( Y, direct( 0 ) );
 }
 
-//STY addr    8C    Absolute        3
+////STY addr    8C    Absolute        3
 void f8C_STY(){
-    uint8_t *addr = access_address(absolute());
-    if (x_flag() == 0)
-        STN_16(addr, Y);
-    else
-        STN_8(addr, Y);
-
-    program_counter += 3;
+    STN( Y, absolute( 0 ) );
 }
 
-//STY dp, X    94    DP Indexed, X        2
+////STY dp, X    94    DP Indexed, X        2
 void f94_STY(){
-    uint8_t *addr = access_address(direct_indexed_x());
-    if (x_flag() == 0)
-        STN_16(addr, Y);
-    else
-        STN_8(addr, Y);
-
-    program_counter += 2;
+    STN( Y, direct( X ) );
 }
 
-//STZ dp    64    Direct Page        2
+////STZ dp    64    Direct Page        2
 void f64_STZ(){
-
-    uint8_t *addr = accessAddressFromBank(0x00, direct());
-    if (x_flag() == 0)
-        STN_16(addr, 0x0000);
-    else
-        STN_8(addr, 0x0000);
-
-    program_counter += 2;
+    STN( 0, direct( 0 ) );
 }
 
-//STZ dp, X    74    DP Indexed, X        2
+////STZ dp, X    74    DP Indexed, X        2
 void f74_STZ(){
-    uint8_t *addr = access_address(direct_indexed_x());
-    if (x_flag() == 0)
-        STN_16(addr, 0x0000);
-    else
-        STN_8(addr, 0x0000);
-
-    program_counter += 2;
+    STN( 0, direct( X ) );
 }
 
-//STZ addr    9C    Absolute        3
+////STZ addr    9C    Absolute        3
 void f9C_STZ(){
-    uint8_t *addr = access_address(absolute());
-    if (x_flag() == 0)
-        STN_16(addr, 0x0000);
-    else
-        STN_8(addr, 0x0000);
-
-    program_counter += 3;
+    STN( 0, absolute( 0 ) );
 }
 
-//STZ addr, X    9E    Absolute Indexed, X        3
+////STZ addr, X    9E    Absolute Indexed, X        3
 void f9E_STZ(){
-    uint8_t *addr = accessAddressFromBank(data_bank_register, absolute_indexed_x());
-    if (x_flag() == 0)
-        STN_16(addr, 0x0000);
-    else
-        STN_8(addr, 0x0000);
-
-    program_counter += 3;
+    STN( 0, absoluteIndexedX() );
 }
 
 #pragma endregion
 
 #pragma region test_reset
 
-//TRB dp    14    Direct Page    ��Z - 2
+static inline void TRB( uint8_t *O1 ) {
+    uint16_t zero = ZERO_FLAG;
+    if ( p_register & M_FLAG ) {
+        *O1 &= ~( (uint8_t)( accumulator & 0x00FF ) );
+        zero = ( *O1 == 0 ) ? ZERO_FLAG : 0x00;
+    }
+    else {
+        uint16_t value = readU16( O1 );
+        value &= ~accumulator;
+        zero = ( value == 0 ) ? ZERO_FLAG : 0x00;
+        storeU16( O1, value );
+    }
+
+    p_register = ( p_register & ~ZERO_FLAG ) | zero;
+}
+
+////TRB dp    14    Direct Page    ��Z - 2
 void f14_TRB(){
-    uint8_t *local_addr = accessAddressFromBank(data_bank_register, direct());
-    if (m_flag() == 0) {
-        uint16_t val = get2Byte(local_addr);
-        val &= accumulator;
-        *local_addr = val; //TODO
-        set_p_register_16(val, ZERO_FLAG);
-    }
-    else {
-        *local_addr = accumulator & *local_addr;
-        set_p_register_8(*local_addr, ZERO_FLAG);
-    }
-
+    TRB( direct( 0 ) );
 }
 
-//TRB addr    1C    Absolute    ��Z - 3
+////TRB addr    1C    Absolute    ��Z - 3
 void f1C_TRB(){
-    uint8_t *local_addr = access_address(absolute());
-    if (m_flag() == 0) {
-        uint16_t val = get2Byte(local_addr);
-        val &= accumulator;
-        *local_addr = val; //TODO
-        set_p_register_16(val, ZERO_FLAG);
-    }
-    else {
-        *local_addr = accumulator & *local_addr;
-        set_p_register_8(*local_addr, ZERO_FLAG);
-    }
+    TRB( absolute( 0 ) );
 }
 
-//TSB dp    4    Direct Page    ��Z - 2
+static inline void TSB( uint8_t *O1 ) {
+    uint16_t zero = ZERO_FLAG;
+    if ( p_register & M_FLAG ) {
+        uint8_t accVal = (uint8_t)( accumulator & 0x00FF );
+        *O1 |= accVal;
+        zero = ( ( accVal & *O1 ) == 0 ) ? ZERO_FLAG : 0x00;
+    }
+    else {
+        uint16_t value = readU16( O1 );
+        value |= accumulator;
+        zero = ( ( value & accumulator ) == 0 ) ? ZERO_FLAG : 0x00;
+        storeU16( O1, value );
+    }
+
+    p_register = ( p_register & ~ZERO_FLAG ) | zero;
+}
+
+////TSB dp    4    Direct Page    ��Z - 2
 void f04_TSB(){
-    uint8_t *local_addr = accessAddressFromBank(data_bank_register, direct());
-    if (m_flag() == 0) {
-        uint16_t val = get2Byte(local_addr);
-        val |= accumulator;
-        *local_addr = val; //TODO
-        set_p_register_16(val, ZERO_FLAG);
-    }
-    else {
-        *local_addr = accumulator | *local_addr;
-        set_p_register_8(*local_addr, ZERO_FLAG);
-    }
+    TSB( direct( 0 ) );
 }
 
-//TSB addr    0C    Absolute    ��Z - 3
+////TSB addr    0C    Absolute    ��Z - 3
 void f0C_TSB(){
-    uint8_t *local_addr = access_address(absolute());
-    if (m_flag() == 0) {
-        uint16_t val = get2Byte(local_addr);
-        val |= accumulator;
-        *local_addr = val; //TODO
-        set_p_register_16(val, ZERO_FLAG);
-    }
-    else {
-        *local_addr = accumulator | *local_addr;
-        set_p_register_8(*local_addr, ZERO_FLAG);
-    }
+    TSB( absolute( 0 ) );
 }
 #pragma endregion
 
 #pragma region transfers
-//TAX    AA    Implied    N��Z - 1
+static inline void TA( uint8_t *target ) {
+    uint16_t negative = 0x00;
+    if ( p_register & X_FLAG ) {
+        *target = accumulator & 0x00FF;
+        negative = ( *target & 0x0080 ) ? NEGATIVE_FLAG : negative;
+    }
+    else {
+        storeU16( target, accumulator );
+        negative = ( *target & 0x8000 ) ? NEGATIVE_FLAG : negative;
+    }
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG ) )
+        | ( ( *target == 0 ) ? ZERO_FLAG : 0x00 )
+        | negative;
+}
+////TAX    AA    Implied    N��Z - 1
 void fAA_TAX() {
-    X = accumulator;
-    if (x_flag() == 0)
-        set_p_register_16(X, NEGATIVE_FLAG | ZERO_FLAG);
-    else
-        set_p_register_8(X, NEGATIVE_FLAG | ZERO_FLAG);
-    program_counter++;
+    TA( (uint8_t*)&X );
 }
 
-//TAY    A8    Implied    N��Z - 1
+////TAY    A8    Implied    N��Z - 1
 void fA8_TAY() {
-    Y = accumulator;
-    if (x_flag() == 0)
-        set_p_register_16(Y, NEGATIVE_FLAG | ZERO_FLAG);
-    else
-        set_p_register_8(Y, NEGATIVE_FLAG | ZERO_FLAG);
-    program_counter++;
+    TA( (uint8_t*)&Y );
 }
 
-//TCD    5B    Implied    N��Z - 1
+////TCD    5B    Implied    N��Z - 1
 void f5B_TCD() {
     direct_page = accumulator;
-    set_p_register_16(direct_page, NEGATIVE_FLAG | ZERO_FLAG);
-    program_counter++;
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG ) )
+        | ( ( direct_page == 0 ) ? ZERO_FLAG : 0x00 )
+        | ( ( direct_page & 0x8000 ) ? NEGATIVE_FLAG : 0x00 );
 }
 
-//TCS    1B    Implied        1
+////TCS    1B    Implied        1
 void f1B_TCS() {
-    stack = accumulator;
-    if (inEmulationMode) {
-        stack &= 0x00FF;
-        stack |= 0x0100;
+    stack_pointer = accumulator;
+    if ( inEmulationMode ) {
+        stack_pointer &= 0x00FF;
+        stack_pointer |= 0x0100;
     }
-    program_counter++;
 }
 
-//TDC    7B    Implied    N��Z - 1
+////TDC    7B    Implied    N��Z - 1
 void f7B_TDC() {
     accumulator = direct_page;
-    set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-    program_counter++;
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG ) )
+        | ( ( accumulator == 0 ) ? ZERO_FLAG : 0x00 )
+        | ( ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : 0x00 );
 }
 
-//TSC    3B    Implied    N��Z - 1
+////TSC    3B    Implied    N��Z - 1
 void f3B_TSC(){
-    accumulator = stack;
-    set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-    program_counter++;
+    accumulator = stack_pointer;
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG ) )
+        | ( ( accumulator == 0 ) ? ZERO_FLAG : 0x00 )
+        | ( ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : 0x00 );
 }
 
-//TSX    BA    Implied    N��Z - 1
+////TSX    BA    Implied    N��Z - 1
 void fBA_TSX(){
-    X = stack;
-    set_p_register_16(X, NEGATIVE_FLAG | ZERO_FLAG);
-    program_counter++;
+    X = stack_pointer;
+    uint16_t negative = 0x00;
+    if ( p_register & X_FLAG ) {
+        X &= 0x00FF;
+        negative = ( X & 0x80 ) ? NEGATIVE_FLAG : negative;
+    }
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG ) )
+        | ( ( X == 0 ) ? ZERO_FLAG : 0x00 )
+        | negative;
 }
 
-//TXA    8A    Implied    N��Z - 1
+////TXA    8A    Implied    N��Z - 1
 void f8A_TXA(){
-    accumulator = X;
-    set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-    program_counter++;
+    uint16_t negative = 0x00;
+    uint16_t zero = 0x00;
+    if ( p_register & M_FLAG ) {
+        accumulator = ( accumulator & 0xFF00 ) | ( X & 0x00FF );
+        negative = ( accumulator & 0x0080 ) ? NEGATIVE_FLAG : negative;
+        zero = ( ( accumulator & 0x00FF ) == 0 ) ? ZERO_FLAG : zero;
+    }
+    else {
+        accumulator = X;
+        if ( p_register & X_FLAG ) {
+            accumulator &= 0x00FF;
+        }
+        negative = ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : negative;
+        zero = ( accumulator == 0 ) ? ZERO_FLAG : zero;
+
+    }
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG ) )
+        | negative | zero;
 }
 
-//TXS    9A    Implied        1
+////TXS    9A    Implied        1
 void f9A_TXS(){
-    stack = X;
-    set_p_register_16(stack, NEGATIVE_FLAG | ZERO_FLAG);
-    program_counter++;
+    if ( inEmulationMode || ( p_register & X_FLAG ) ) {
+        stack_pointer = X & 0x00FF;
+    }
+    else {
+        stack_pointer = X;
+    }
 }
 
-//TXY    9B    Implied    N��Z - 1
+////TXY    9B    Implied    N��Z - 1
 void f9B_TXY(){
     Y = X;
-    set_p_register_16(Y, NEGATIVE_FLAG | ZERO_FLAG);
-    program_counter++;
+    uint16_t nMask = ( p_register & X_FLAG ) ? 0x0080 : 0x8000;
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG ) )
+        | ( ( Y & nMask ) ? NEGATIVE_FLAG : 0x00 )
+        | ( ( Y == 0 ) ? ZERO_FLAG : 0x00 );
 }
 
-//TYA    98    Implied    N��Z - 1
+////TYA    98    Implied    N��Z - 1
 void f98_TYA(){
-    accumulator = Y;
-    set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-    program_counter++;
+    uint16_t negative = 0x00;
+    uint16_t zero = 0x00;
+    if ( p_register & M_FLAG ) {
+        accumulator = ( accumulator & 0xFF00 ) | ( Y & 0x00FF );
+        negative = ( accumulator & 0x0080 ) ? NEGATIVE_FLAG : negative;
+        zero = ( ( accumulator & 0x00FF ) == 0 ) ? ZERO_FLAG : zero;
+    }
+    else {
+        accumulator = Y;
+        if ( p_register & X_FLAG ) {
+            accumulator &= 0x00FF;
+        }
+        negative = ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : negative;
+        zero = ( accumulator == 0 ) ? ZERO_FLAG : zero;
+
+    }
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG ) )
+        | negative | zero;
 }
 
-//TYX    BB    Implied    N��Z - 1
+////TYX    BB    Implied    N��Z - 1
 void fBB_TYX(){
     X = Y;
-    set_p_register_16(X, NEGATIVE_FLAG | ZERO_FLAG);
-    program_counter++;
+    uint16_t nMask = ( p_register & X_FLAG ) ? 0x0080 : 0x8000;
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG ) )
+        | ( ( X & nMask ) ? NEGATIVE_FLAG : 0x00 )
+        | ( ( X == 0 ) ? ZERO_FLAG : 0x00 );
 }
 #pragma endregion
 
-//WAI    CB    Implied        1
-void fCB_WAI(){}
+////WAI    CB    Implied        1
+void fCB_WAI(){
+    // TODO
+}
 
 //STP    DB    Implied        1
-void fDB_STP() {}
+void fDB_STP() {
+    // TODO
+}
 
-//WDM    42            2
-void f42_WDM(){}
+////WDM    42            2
+void f42_WDM(){
+    // TODO
+}
 
 //XBA    EB    Implied    N��Z - 1
 void fEB_XBA(){
-    uint8_t B = accumulator & 0x00FF;
-    accumulator = accumulator >> 8;
-    accumulator = accumulator | (B << 8);
-    uint8_t A = accumulator & 0x00FF;
-    set_p_register_8(A, ZERO_FLAG | NEGATIVE_FLAG);
-    program_counter++;
+    accumulator = ( accumulator >> 8 ) | ( accumulator << 8 );
+
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG ) )
+        | ( ( accumulator & 0x0080 ) ? NEGATIVE_FLAG : 0x00 )
+        | ( ( ( accumulator & 0x00FF ) == 0 ) ? ZERO_FLAG : 0x00 );
 }
 
 //XCE    FB    Implied    �MX�CE    1
@@ -3821,15 +2357,273 @@ void fFB_XCE(){
     uint8_t carryVal = p_register & CARRY_FLAG;
 
     p_register &= ~CARRY_FLAG;
+
     // TODO - Ground truth is apparently broken, so nix this while developing
-    if ( emulation_flag )
+    if ( inEmulationMode )
         p_register |= CARRY_FLAG;
-    emulation_flag = carryVal;
     
-    inEmulationMode = emulation_flag;
+    inEmulationMode = carryVal;
 
     program_counter++;
 }
 
+static InstructionEntry instructions[ 0x100 ] = {
+    { f00_BRK, 2, 7 }, // Break ; Stack/Interrupt ; ----DI--
+    { f01_ORA, 2, 6 }, // (dp,X) ; OR Accumulator with Memory ; DP Indexed Indirect,X	N-----Z-
+    { f02_COP, 2, 7 }, // const ; Co-Processor Enable ; Stack/Interrupt	----DI--
+    { f03_ORA, 2, 4 }, // sr,S ; OR Accumulator with Memory ; Stack Relative	N-----Z-
+    { f04_TSB, 2, 5 }, // dp ; Test and Set Memory Bits Against Accumulator ; Direct Page	------Z-
+    { f05_ORA, 2, 3 }, // dp ; OR Accumulator with Memory ; Direct Page	N-----Z-
+    { f06_ASL, 2, 5 }, // dp ; Arithmetic Shift Left ; Direct Page	N-----ZC
+    { f07_ORA, 2, 6 }, // [dp] ; OR Accumulator with Memory ; DP Indirect Long	N-----Z-
+    { f08_PHP, 1, 3 }, // Push Processor Status Register ; Stack (Push)
+    { f09_ORA, 2, 2 }, // #const ; OR Accumulator with Memory ; Immediate	N-----Z-
+    { f0A_ASL, 1, 2 }, // A ; Arithmetic Shift Left ; Accumulator	N-----ZC
+    { f0B_PHD, 1, 4 }, // Push Direct Page Register ; Stack (Push)
+    { f0C_TSB, 3, 6 }, // addr ; Test and Set Memory Bits Against Accumulator ; Absolute	------Z-
+    { f0D_ORA, 3, 4 }, // addr ; OR Accumulator with Memory ; Absolute	N-----Z-
+    { f0E_ASL, 3, 6 }, // addr ; Arithmetic Shift Left ; Absolute	N-----ZC
+    { f0F_ORA, 4, 5 }, // long ; OR Accumulator with Memory ; Absolute Long	N-----Z-
+    { f10_BPL, 2, 2 }, // nearlabel ; Branch if Plus ; Program Counter Relative
+    { f11_ORA, 2, 5 }, // (dp),Y ; OR Accumulator with Memory ; DP Indirect Indexed, Y	N-----Z-
+    { f12_ORA, 2, 5 }, // (dp) ; OR Accumulator with Memory ; DP Indirect	N-----Z-
+    { f13_ORA, 2, 7 }, // (sr,S),Y ; OR Accumulator with Memory ; SR Indirect Indexed,Y	N-----Z-
+    { f14_TRB, 2, 5 }, // dp ; Test and Reset Memory Bits Against Accumulator ; Direct Page	------Z-
+    { f15_ORA, 2, 4 }, // dp,X ; OR Accumulator with Memory ; DP Indexed,X	N-----Z-
+    { f16_ASL, 2, 6 }, // dp,X ; Arithmetic Shift Left ; DP Indexed,X	N-----ZC
+    { f17_ORA, 2, 6 }, // [dp],Y ; OR Accumulator with Memory ; DP Indirect Long Indexed, Y	N-----Z-
+    { f18_CLC, 1, 2 }, // Clear Carry ; Implied ; -------C
+    { f19_ORA, 3, 4 }, // addr,Y ; OR Accumulator with Memory ; Absolute Indexed,Y	N-----Z-
+    { f1A_INC, 1, 2 }, // A	INA ; Increment ; Accumulator	N-----Z-
+    { f1B_TCS, 1, 2 }, // Transfer 16-bit Accumulator to Stack Pointer ; Implied
+    { f1C_TRB, 3, 6 }, // addr ; Test and Reset Memory Bits Against Accumulator ; Absolute	------Z-
+    { f1D_ORA, 3, 4 }, // addr,X ; OR Accumulator with Memory ; Absolute Indexed,X	N-----Z-
+    { f1E_ASL, 3, 7 }, // addr,X ; Arithmetic Shift Left ; Absolute Indexed,X	N-----ZC
+    { f1F_ORA, 4, 5 }, // long,X ; OR Accumulator with Memory ; Absolute Long Indexed,X	N-----Z-
+    { f20_JSR, 3, 6 }, // addr ; Jump to Subroutine ; Absolute
+    { f21_AND, 2, 6 }, // (dp,X) ; AND Accumulator with Memory ; DP Indexed Indirect,X	N-----Z-
+    { f22_JSR, 4, 8 }, // long	JSL ; Jump to Subroutine ; Absolute Long
+    { f23_AND, 2, 4 }, // sr,S ; AND Accumulator with Memory ; Stack Relative	N-----Z-
+    { f24_BIT, 2, 3 }, // dp ; Test Bits ; Direct Page	NV----Z-
+    { f25_AND, 2, 3 }, // dp ; AND Accumulator with Memory ; Direct Page	N-----Z-
+    { f26_ROL, 2, 5 }, // dp ; Rotate Memory or Accumulator Left ; Direct Page	N-----ZC
+    { f27_AND, 2, 6 }, // [dp] ; AND Accumulator with Memory ; DP Indirect Long	N-----Z-
+    { f28_PLP, 1, 4 }, // Pull Processor Status Register ; Stack (Pull) ; NVMXDIZC
+    { f29_AND, 2, 2 }, // #const ; AND Accumulator with Memory ; Immediate	N-----Z-
+    { f2A_ROL, 1, 2 }, // A ; Rotate Memory or Accumulator Left ; Accumulator	N-----ZC
+    { f2B_PLD, 1, 5 }, // Pull Direct Page Register ; Stack (Pull) ; N-----Z-
+    { f2C_BIT, 3, 4 }, // addr ; Test Bits ; Absolute	NV----Z-
+    { f2D_AND, 3, 4 }, // addr ; AND Accumulator with Memory ; Absolute	N-----Z-
+    { f2E_ROL, 3, 6 }, // addr ; Rotate Memory or Accumulator Left ; Absolute	N-----ZC
+    { f2F_AND, 4, 5 }, // long ; AND Accumulator with Memory ; Absolute Long	N-----Z-
+    { f30_BMI, 2, 2 }, // nearlabel ; Branch if Minus ; Program Counter Relative
+    { f31_AND, 2, 5 }, // (dp),Y ; AND Accumulator with Memory ; DP Indirect Indexed, Y	N-----Z-
+    { f32_AND, 2, 5 }, // (dp) ; AND Accumulator with Memory ; DP Indirect	N-----Z-
+    { f33_AND, 2, 7 }, // (sr,S),Y ; AND Accumulator with Memory ; SR Indirect Indexed,Y	N-----Z-
+    { f34_BIT, 2, 4 }, // dp,X ; Test Bits ; DP Indexed,X	NV----Z-
+    { f35_AND, 2, 4 }, // dp,X ; AND Accumulator with Memory ; DP Indexed,X	N-----Z-
+    { f36_ROL, 2, 6 }, // dp,X ; Rotate Memory or Accumulator Left ; DP Indexed,X	N-----ZC
+    { f37_AND, 2, 6 }, // [dp],Y ; AND Accumulator with Memory ; DP Indirect Long Indexed, Y	N-----Z-
+    { f38_SEC, 1, 2 }, // Set Carry Flag ; Implied ; -------C
+    { f39_AND, 3, 4 }, // addr,Y ; AND Accumulator with Memory ; Absolute Indexed,Y	N-----Z-
+    { f3A_DEC, 1, 2 }, // A	DEA ; Decrement ; Accumulator	N-----Z-
+    { f3B_TSC, 1, 2 }, // Transfer Stack Pointer to 16-bit Accumulator ; Implied ; N-----Z-
+    { f3C_BIT, 3, 4 }, // addr,X ; Test Bits ; Absolute Indexed,X	NV----Z-
+    { f3D_AND, 3, 4 }, // addr,X ; AND Accumulator with Memory ; Absolute Indexed,X	N-----Z-
+    { f3E_ROL, 3, 7 }, // addr,X ; Rotate Memory or Accumulator Left ; Absolute Indexed,X	N-----ZC
+    { f3F_AND, 4, 5 }, // long,X ; AND Accumulator with Memory ; Absolute Long Indexed,X	N-----Z-
+    { f40_RTI, 1, 6 }, // Return from Interrupt ; Stack (RTI) ; NVMXDIZC
+    { f41_EOR, 2, 6 }, // (dp,X) ; Exclusive-OR Accumulator with Memory ; DP Indexed Indirect,X	N-----Z-
+    { f42_WDM, 2, 0 }, //	Reserved for Future Expansion	42	2	0
+    { f43_EOR, 2, 4 }, // sr,S ; Exclusive-OR Accumulator with Memory ; Stack Relative	N-----Z-
+    { f44_MVP, 3, 1 }, // srcbk,destbk ; Block Move Positive ; Block Move
+    { f45_EOR, 2, 3 }, // dp ; Exclusive-OR Accumulator with Memory ; Direct Page	N-----Z-
+    { f46_LSR, 2, 5 }, // dp ; Logical Shift Memory or Accumulator Right ; Direct Page	N-----ZC
+    { f47_EOR, 2, 6 }, // [dp] ; Exclusive-OR Accumulator with Memory ; DP Indirect Long	N-----Z-
+    { f48_PHA, 1, 3 }, // Push Accumulator ; Stack (Push)
+    { f49_EOR, 2, 2 }, // #const ; Exclusive-OR Accumulator with Memory ; Immediate	N-----Z-
+    { f4A_LSR, 1, 2 }, // A ; Logical Shift Memory or Accumulator Right ; Accumulator	N-----ZC
+    { f4B_PHK, 1, 3 }, // Push Program Bank Register ; Stack (Push)
+    { f4C_JMP, 3, 3 }, // addr ; Jump ; Absolute
+    { f4D_EOR, 3, 4 }, // addr ; Exclusive-OR Accumulator with Memory ; Absolute	N-----Z-
+    { f4E_LSR, 3, 6 }, // addr ; Logical Shift Memory or Accumulator Right ; Absolute	N-----ZC
+    { f4F_EOR, 4, 5 }, // long ; Exclusive-OR Accumulator with Memory ; Absolute Long	N-----Z-
+    { f50_BVC, 2, 2 }, // nearlabel ; Branch if Overflow Clear ; Program Counter Relative
+    { f51_EOR, 2, 5 }, // (dp),Y ; Exclusive-OR Accumulator with Memory ; DP Indirect Indexed, Y	N-----Z-
+    { f52_EOR, 2, 5 }, // (dp) ; Exclusive-OR Accumulator with Memory ; DP Indirect	N-----Z-
+    { f53_EOR, 2, 7 }, // (sr,S),Y ; Exclusive-OR Accumulator with Memory ; SR Indirect Indexed,Y	N-----Z-
+    { f54_MVN, 3, 1 }, // srcbk,destbk ; Block Move Negative ; Block Move
+    { f55_EOR, 2, 4 }, // dp,X ; Exclusive-OR Accumulator with Memory ; DP Indexed,X	N-----Z-
+    { f56_LSR, 2, 6 }, // dp,X ; Logical Shift Memory or Accumulator Right ; DP Indexed,X	N-----ZC
+    { f57_EOR, 2, 6 }, // [dp],Y ; Exclusive-OR Accumulator with Memory ; DP Indirect Long Indexed, Y	N-----Z-
+    { f58_CLI, 1, 2 }, // Clear Interrupt Disable Flag ; Implied ; -----I--
+    { f59_EOR, 3, 4 }, // addr,Y ; Exclusive-OR Accumulator with Memory ; Absolute Indexed,Y	N-----Z-
+    { f5A_PHY, 1, 3 }, // Push Index Register Y ; Stack (Push)
+    { f5B_TCD, 1, 2 }, // Transfer 16-bit Accumulator to Direct Page Register ; Implied ; N-----Z-
+    { f5C_JMP, 4, 4 }, // long	JML ; Jump ; Absolute Long
+    { f5D_EOR, 3, 4 }, // addr,X ; Exclusive-OR Accumulator with Memory ; Absolute Indexed,X	N-----Z-
+    { f5E_LSR, 3, 7 }, // addr,X ; Logical Shift Memory or Accumulator Right ; Absolute Indexed,X	N-----ZC
+    { f5F_EOR, 4, 5 }, // long,X ; Exclusive-OR Accumulator with Memory ; Absolute Long Indexed,X	N-----Z-
+    { f60_RTS, 1, 6 }, // Return from Subroutine ; Stack (RTS)
+    { f61_ADC, 2, 6 }, // (dp,X) ; Add With Carry ; DP Indexed Indirect,X	NV----ZC
+    { f62_PER, 3, 6 }, // label ; Push Effective PC Relative Indirect Address ; Stack (PC Relative Long)
+    { f63_ADC, 2, 4 }, // sr,S ; Add With Carry ; Stack Relative	NV----ZC
+    { f64_STZ, 2, 3 }, // dp ; Store Zero to Memory ; Direct Page
+    { f65_ADC, 2, 3 }, // dp ; Add With Carry ; Direct Page	NV----ZC
+    { f66_ROR, 2, 5 }, // dp ; Rotate Memory or Accumulator Right ; Direct Page	N-----ZC
+    { f67_ADC, 2, 6 }, // [dp] ; Add With Carry ; DP Indirect Long	NV----ZC
+    { f68_PLA, 1, 4 }, // Pull Accumulator ; Stack (Pull) ; N-----Z-
+    { f69_ADC, 2, 2 }, // #const ; Add With Carry ; Immediate	NV----ZC
+    { f6A_ROR, 1, 2 }, // A ; Rotate Memory or Accumulator Right ; Accumulator	N-----ZC
+    { f6B_RTL, 1, 6 }, // Return from Subroutine Long ; Stack (RTL)
+    { f6C_JMP, 3, 5 }, // (addr) ; Jump ; Absolute Indirect
+    { f6D_ADC, 3, 4 }, // addr ; Add With Carry ; Absolute	NV----ZC
+    { f6E_ROR, 3, 6 }, // addr ; Rotate Memory or Accumulator Right ; Absolute	N-----ZC
+    { f6F_ADC, 4, 5 }, // long ; Add With Carry ; Absolute Long	NV----ZC
+    { f70_BVS, 2, 2 }, // nearlabel ; Branch if Overflow Set ; Program Counter Relative
+    { f71_ADC, 2, 5 }, // ( dp),Y ; Add With Carry ; DP Indirect Indexed, Y	NV----ZC
+    { f72_ADC, 2, 5 }, // (dp) ; Add With Carry ; DP Indirect	NV----ZC
+    { f73_ADC, 2, 7 }, // (sr,S),Y ; Add With Carry ; SR Indirect Indexed,Y	NV----ZC
+    { f74_STZ, 2, 4 }, // dp,X ; Store Zero to Memory ; DP Indexed,X
+    { f75_ADC, 2, 4 }, // dp,X ; Add With Carry ; DP Indexed,X	NV----ZC
+    { f76_ROR, 2, 6 }, // dp,X ; Rotate Memory or Accumulator Right ; DP Indexed,X	N-----ZC
+    { f77_ADC, 2, 6 }, // [dp],Y ; Add With Carry ; DP Indirect Long Indexed, Y	NV----ZC
+    { f78_SEI, 1, 2 }, // Set Interrupt Disable Flag ; Implied ; -----I--
+    { f79_ADC, 3, 4 }, // addr,Y ; Add With Carry ; Absolute Indexed,Y	NV----ZC
+    { f7A_PLY, 1, 4 }, // Pull Index Register Y ; Stack (Pull) ; N-----Z-
+    { f7B_TDC, 1, 2 }, // Transfer Direct Page Register to 16-bit Accumulator ; Implied ; N-----Z-
+    { f7C_JMP, 3, 6 }, // (addr,X) ; Jump ; Absolute Indexed Indirect
+    { f7D_ADC, 3, 4 }, // addr,X ; Add With Carry ; Absolute Indexed,X	NV----ZC
+    { f7E_ROR, 3, 7 }, // addr,X ; Rotate Memory or Accumulator Right ; Absolute Indexed,X	N-----ZC
+    { f7F_ADC, 4, 5 }, // long,X ; Add With Carry ; Absolute Long Indexed,X	NV----ZC
+    { f80_BRA, 2, 3 }, // nearlabel ; Branch Always ; Program Counter Relative
+    { f81_STA, 2, 6 }, // (dp,X) ; Store Accumulator to Memory ; DP Indexed Indirect,X
+    { f82_BRL, 3, 4 }, // label ; Branch Long Always ; Program Counter Relative Long
+    { f83_STA, 2, 4 }, // sr,S ; Store Accumulator to Memory ; Stack Relative
+    { f84_STY, 2, 3 }, // dp ; Store Index Register Y to Memory ; Direct Page
+    { f85_STA, 2, 3 }, // dp ; Store Accumulator to Memory ; Direct Page
+    { f86_STX, 2, 3 }, // dp ; Store Index Register X to Memory ; Direct Page
+    { f87_STA, 2, 6 }, // [dp] ; Store Accumulator to Memory ; DP Indirect Long
+    { f88_DEY, 1, 2 }, // Decrement Index Register Y ; Implied ; N-----Z-
+    { f89_BIT, 2, 2 }, // #const ; Test Bits ; Immediate	------Z-
+    { f8A_TXA, 1, 2 }, // Transfer Index Register X to Accumulator ; Implied ; N-----Z-
+    { f8B_PHB, 1, 3 }, // Push Data Bank Register ; Stack (Push)
+    { f8C_STY, 3, 4 }, // addr ; Store Index Register Y to Memory ; Absolute
+    { f8D_STA, 3, 4 }, // addr ; Store Accumulator to Memory ; Absolute
+    { f8E_STX, 3, 4 }, // addr ; Store Index Register X to Memory ; Absolute
+    { f8F_STA, 4, 5 }, // long ; Store Accumulator to Memory ; Absolute Long
+    { f90_BCC, 2, 2 }, // nearlabel	BLT ; Branch if Carry Clear ; Program Counter Relative
+    { f91_STA, 2, 6 }, // (dp),Y ; Store Accumulator to Memory ; DP Indirect Indexed, Y
+    { f92_STA, 2, 5 }, // (dp) ; Store Accumulator to Memory ; DP Indirect
+    { f93_STA, 2, 7 }, // (sr,S),Y ; Store Accumulator to Memory ; SR Indirect Indexed,Y
+    { f94_STY, 2, 4 }, // dp,X ; Store Index Register Y to Memory ; DP Indexed,X
+    { f95_STA, 2, 4 }, // _dp_X ; Store Accumulator to Memory ; DP Indexed,X
+    { f96_STX, 2, 4 }, // dp,Y ; Store Index Register X to Memory ; DP Indexed,Y
+    { f97_STA, 2, 6 }, // [dp],Y ; Store Accumulator to Memory ; DP Indirect Long Indexed, Y
+    { f98_TYA, 1, 2 }, // Transfer Index Register Y to Accumulator ; Implied ; N-----Z-
+    { f99_STA, 3, 5 }, // addr,Y ; Store Accumulator to Memory ; Absolute Indexed,Y
+    { f9A_TXS, 1, 2 }, // Transfer Index Register X to Stack Pointer ; Implied
+    { f9B_TXY, 1, 2 }, // Transfer Index Register X to Index Register Y ; Implied ; N-----Z-
+    { f9C_STZ, 3, 4 }, // addr ; Store Zero to Memory ; Absolute
+    { f9D_STA, 3, 5 }, // addr,X ; Store Accumulator to Memory ; Absolute Indexed,X
+    { f9E_STZ, 3, 5 }, // addr,X ; Store Zero to Memory ; Absolute Indexed,X
+    { f9F_STA, 4, 5 }, // long,X ; Store Accumulator to Memory ; Absolute Long Indexed,X
+    { fA0_LDY, 2, 2 }, // #const ; Load Index Register Y from Memory ; Immediate	N-----Z-
+    { fA1_LDA, 2, 6 }, // (dp,X) ; Load Accumulator from Memory ; DP Indexed Indirect,X	N-----Z-
+    { fA2_LDX, 2, 2 }, // #const ; Load Index Register X from Memory ; Immediate	N-----Z-
+    { fA3_LDA, 2, 4 }, // sr,S ; Load Accumulator from Memory ; Stack Relative	N-----Z-
+    { fA4_LDY, 2, 3 }, // dp ; Load Index Register Y from Memory ; Direct Page	N-----Z-
+    { fA5_LDA, 2, 3 }, // dp ; Load Accumulator from Memory ; Direct Page	N-----Z-
+    { fA6_LDX, 2, 3 }, // dp ; Load Index Register X from Memory ; Direct Page	N-----Z-
+    { fA7_LDA, 2, 6 }, // [dp] ; Load Accumulator from Memory ; DP Indirect Long	N-----Z-
+    { fA8_TAY, 1, 2 }, // Transfer Accumulator to Index Register Y ; Implied ; N-----Z-
+    { fA9_LDA, 2, 2 }, // #const ; Load Accumulator from Memory ; Immediate	N-----Z-
+    { fAA_TAX, 1, 2 }, // Transfer Accumulator to Index Register X ; Implied ; N-----Z-
+    { fAB_PLB, 1, 4 }, // Pull Data Bank Register ; Stack (Pull) ; N-----Z-
+    { fAC_LDY, 3, 4 }, // addr ; Load Index Register Y from Memory ; Absolute	N-----Z-
+    { fAD_LDA, 3, 4 }, // addr ; Load Accumulator from Memory ; Absolute	N-----Z-
+    { fAE_LDX, 3, 4 }, // addr ; Load Index Register X from Memory ; Absolute	N-----Z-
+    { fAF_LDA, 4, 5 }, // long ; Load Accumulator from Memory ; Absolute Long	N-----Z-
+    { fB0_BCS, 2, 2 }, // nearlabel	BGE ; Branch if Carry Set ; Program Counter Relative
+    { fB1_LDA, 2, 5 }, // (dp),Y ; Load Accumulator from Memory ; DP Indirect Indexed, Y	N-----Z-
+    { fB2_LDA, 2, 5 }, // (dp) ; Load Accumulator from Memory ; DP Indirect	N-----Z-
+    { fB3_LDA, 2, 7 }, // (sr,S),Y ; Load Accumulator from Memory ; SR Indirect Indexed,Y	N-----Z-
+    { fB4_LDY, 2, 4 }, // dp,X ; Load Index Register Y from Memory ; DP Indexed,X	N-----Z-
+    { fB5_LDA, 2, 4 }, // dp,X ; Load Accumulator from Memory ; DP Indexed,X	N-----Z-
+    { fB6_LDX, 2, 4 }, // dp,Y ; Load Index Register X from Memory ; DP Indexed,Y	N-----Z-
+    { fB7_LDA, 2, 6 }, // [dp],Y ; Load Accumulator from Memory ; DP Indirect Long Indexed, Y	N-----Z-
+    { fB8_CLV, 1, 2 }, // Clear Overflow Flag ; Implied ; -V------
+    { fB9_LDA, 3, 4 }, // addr,Y ; Load Accumulator from Memory ; Absolute Indexed,Y	N-----Z-
+    { fBA_TSX, 1, 2 }, // Transfer Stack Pointer to Index Register X ; Implied ; N-----Z-
+    { fBB_TYX, 1, 2 }, // Transfer Index Register Y to Index Register X ; Implied ; N-----Z-
+    { fBC_LDY, 3, 4 }, // addr,X ; Load Index Register Y from Memory ; Absolute Indexed,X	N-----Z-
+    { fBD_LDA, 3, 4 }, // addr,X ; Load Accumulator from Memory ; Absolute Indexed,X	N-----Z-
+    { fBE_LDX, 3, 4 }, // addr,Y ; Load Index Register X from Memory ; Absolute Indexed,Y	N-----Z-
+    { fBF_LDA, 4, 5 }, // long,X ; Load Accumulator from Memory ; Absolute Long Indexed,X	N-----Z-
+    { fC0_CPY, 2, 2 }, // #const ; Compare Index Register Y with Memory ; Immediate	N-----ZC
+    { fC1_CMP, 2, 6 }, // (dp,X) ; Compare Accumulator with Memory ; DP Indexed Indirect,X	N-----ZC
+    { fC2_REP, 2, 3 }, // #const ; Reset Processor Status Bits ; Immediate	NVMXDIZC
+    { fC3_CMP, 2, 4 }, // sr,S ; Compare Accumulator with Memory ; Stack Relative	N-----ZC
+    { fC4_CPY, 2, 3 }, // dp ; Compare Index Register Y with Memory ; Direct Page	N-----ZC
+    { fC5_CMP, 2, 3 }, // dp ; Compare Accumulator with Memory ; Direct Page	N-----ZC
+    { fC6_DEC, 2, 5 }, // dp ; Decrement ; Direct Page	N-----Z-
+    { fC7_CMP, 2, 6 }, // [dp] ; Compare Accumulator with Memory ; DP Indirect Long	N-----ZC
+    { fC8_INY, 1, 2 }, // Increment Index Register Y ; Implied ; N-----Z-
+    { fC9_CMP, 2, 2 }, // #const ; Compare Accumulator with Memory ; Immediate	N-----ZC
+    { fCA_DEX, 1, 2 }, // Decrement Index Register X ; Implied ; N-----Z-
+    { fCB_WAI, 1, 3 }, // Wait for Interrupt ; Implied
+    { fCC_CPY, 3, 4 }, // addr ; Compare Index Register Y with Memory ; Absolute	N-----ZC
+    { fCD_CMP, 3, 4 }, // addr ; Compare Accumulator with Memory ; Absolute	N-----ZC
+    { fCE_DEC, 3, 6 }, // addr ; Decrement ; Absolute	N-----Z-
+    { fCF_CMP, 4, 5 }, // long ; Compare Accumulator with Memory ; Absolute Long	N-----ZC
+    { fD0_BNE, 2, 2 }, // nearlabel ; Branch if Not Equal ; Program Counter Relative
+    { fD1_CMP, 2, 5 }, // (dp),Y ; Compare Accumulator with Memory ; DP Indirect Indexed, Y	N-----ZC
+    { fD2_CMP, 2, 5 }, // (dp) ; Compare Accumulator with Memory ; DP Indirect	N-----ZC
+    { fD3_CMP, 2, 7 }, // (sr,S),Y ; Compare Accumulator with Memory ; SR Indirect Indexed,Y	N-----ZC
+    { fD4_PEI, 2, 6 }, // (dp) ; Push Effective Indirect Address ; Stack (DP Indirect)
+    { fD5_CMP, 2, 4 }, // dp,X ; Compare Accumulator with Memory ; DP Indexed,X	N-----ZC
+    { fD6_DEC, 2, 6 }, // dp,X ; Decrement ; DP Indexed,X	N-----Z-
+    { fD7_CMP, 2, 6 }, // [dp],Y ; Compare Accumulator with Memory ; DP Indirect Long Indexed, Y	N-----ZC
+    { fD8_CLD, 1, 2 }, // Clear Decimal Mode Flag ; Implied ; ----D---
+    { fD9_CMP, 3, 4 }, // addr,Y ; Compare Accumulator with Memory ; Absolute Indexed,Y	N-----ZC
+    { fDA_PHX, 1, 3 }, // Push Index Register X ; Stack (Push)
+    { fDB_STP, 1, 3 }, // Stop Processor ; Implied
+    { fDC_JMP, 3, 6 }, // [addr]	JML ; Jump ; Absolute Indirect Long
+    { fDD_CMP, 3, 4 }, // addr,X ; Compare Accumulator with Memory ; Absolute Indexed,X	N-----ZC
+    { fDE_DEC, 3, 7 }, // addr,X ; Decrement ; Absolute Indexed,X	N-----Z-
+    { fDF_CMP, 4, 5 }, // long,X ; Compare Accumulator with Memory ; Absolute Long Indexed,X	N-----ZC
+    { fE0_CPX, 2, 2 }, // #const ; Compare Index Register X with Memory ; Immediate	N-----ZC
+    { fE1_SBC, 2, 6 }, // (dp,X) ; Subtract with Borrow from Accumulator ; DP Indexed Indirect,X	NV----ZC
+    { fE2_SEP, 2, 3 }, // #const ; Set Processor Status Bits ; Immediate	NVMXDIZC
+    { fE3_SBC, 2, 4 }, // sr,S ; Subtract with Borrow from Accumulator ; Stack Relative	NV----ZC
+    { fE4_CPX, 2, 3 }, // dp ; Compare Index Register X with Memory ; Direct Page	N-----ZC
+    { fE5_SBC, 2, 3 }, // dp ; Subtract with Borrow from Accumulator ; Direct Page	NV----ZC
+    { fE6_INC, 2, 5 }, // dp ; Increment ; Direct Page	N-----Z-
+    { fE7_SBC, 2, 6 }, // [dp] ; Subtract with Borrow from Accumulator ; DP Indirect Long	NV----ZC
+    { fE8_INX, 1, 2 }, // Increment Index Register X ; Implied ; N-----Z-
+    { fE9_SBC, 2, 2 }, // #const ; Subtract with Borrow from Accumulator ; Immediate	NV----ZC
+    { fEA_NOP, 1, 2 }, //	No Operation	EA	Implied	1	2
+    { fEB_XBA, 1, 3 }, // Exchange B and A 8-bit Accumulators ; Implied ; N-----Z-
+    { fEC_CPX, 3, 4 }, // addr ; Compare Index Register X with Memory ; Absolute	N-----ZC
+    { fED_SBC, 3, 4 }, // addr ; Subtract with Borrow from Accumulator ; Absolute	NV----ZC
+    { fEE_INC, 3, 6 }, // addr ; Increment ; Absolute	N-----Z-
+    { fEF_SBC, 4, 5 }, // long ; Subtract with Borrow from Accumulator ; Absolute Long	NV----ZC
+    { fF0_BEQ, 2, 2 }, // nearlabel ; Branch if Equal ; Program Counter Relative
+    { fF1_SBC, 2, 5 }, // (dp),Y ; Subtract with Borrow from Accumulator ; DP Indirect Indexed, Y	NV----ZC
+    { fF2_SBC, 2, 5 }, // (dp) ; Subtract with Borrow from Accumulator ; DP Indirect	NV----ZC
+    { fF3_SBC, 2, 7 }, // (sr,S),Y ; Subtract with Borrow from Accumulator ; SR Indirect Indexed,Y	NV----ZC
+    { fF4_PEA, 3, 5 }, // addr ; Push Effective Absolute Address ; Stack (Absolute)
+    { fF5_SBC, 2, 4 }, // dp,X ; Subtract with Borrow from Accumulator ; DP Indexed,X	NV----ZC
+    { fF6_INC, 2, 6 }, // dp,X ; Increment ; DP Indexed,X	N-----Z-
+    { fF7_SBC, 2, 6 }, // [dp],Y ; Subtract with Borrow from Accumulator ; DP Indirect Long Indexed, Y	NV----ZC
+    { fF8_SED, 1, 2 }, // Set Decimal Flag ; Implied ; ----D---
+    { fF9_SBC, 3, 4 }, // addr,Y ; Subtract with Borrow from Accumulator ; Absolute Indexed,Y	NV----ZC
+    { fFA_PLX, 1, 4 }, // Pull Index Register X ; Stack (Pull) ; N-----Z-
+    { fFB_XCE, 1, 2 }, // Exchange Carry and Emulation Flags ; Implied ; --MX---CE
+    { fFC_JSR, 3, 8 }, // (addr,X)) ; Jump to Subroutine ; Absolute Indexed Indirect
+    { fFD_SBC, 3, 4 }, // addr,X ; Subtract with Borrow from Accumulator ; Absolute Indexed,X	NV----ZC
+    { fFE_INC, 3, 7 }, // addr,X ; Increment ; Absolute Indexed,X	N-----Z-
+    { fFF_SBC, 4, 5 }, // long,X ; Subtract with Borrow from Accumulator ; Absolute Long Indexed,X	NV----ZC
+};
 
 #pragma endregion

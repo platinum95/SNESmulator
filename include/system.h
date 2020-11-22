@@ -8,50 +8,92 @@ System emulates the underlying system of the SNES and manages:
 #ifndef SYSTEM_H
 #define SYSTEM_H
 
+#include <endian.h>
+#include <stdbool.h>
 #include <stdint.h>
 
+// Represents the 24-bit address bus value.
+// Note that padding means we don't save space over a uint32_t, but it should
+// be easier to access memory components
+typedef struct MemoryAddress {
+    uint8_t     bank;
+    uint16_t    offset;
+} MemoryAddress;
 
 //Initialise the system - akin to powering on.
 int startup();
 
-//Access point in mapped memory from 24 bit address 
-uint8_t *access_address( unsigned int addr );
-
 //Begin execution of the loaded cartridge
 void begin_execution();
 
-//Access point in memory from a 1 byte bank and a 2 byte offset
-uint8_t* accessAddressFromBank( uint8_t bank, uint16_t addr );
+// Get a pointer to host memory equivalent to emulated-memory address
+uint8_t* snesMemoryMap( MemoryAddress address );
 
-//Access the start point of the rom data
-uint8_t *getRomData();
+// SNES (both main CPU and SPC700) is little-endian, MSB at highest address.
+// On little-endian hosts, we can just treat the memory as-is.
+// On big-endian hosts, we need to emulate little-endian storage.
+#if __BYTE_ORDER == __LITTLE_ENDIAN
+// Read a 2 byte unsigned in host-relative location
+static inline uint16_t readU16( uint8_t *loc ) {
+    return *(uint16_t*)loc;
+}
 
-//Access the start point of system ram
-uint8_t *accessSystemRam();
+// Read a 3 byte unsigned in host-relative location, delivered in a 4-byte value
+static inline uint32_t readU24( uint8_t *loc ) {
+    return ( *(uint32_t*)loc ) & 0x00FFFFFF;
+}
 
-//Retrieve 2 byte unsigned short from location
-uint16_t get2Byte(uint8_t* loc);
+// Read a 4 byte unsigned in host-relative location
+static inline uint32_t readU32( uint8_t *loc ) {
+    return *(uint32_t*)loc;
+}
 
-//Retrieve 4 byte unsigned integer from location
-uint32_t get3Byte(uint8_t* loc);
+//Store a 2 byte unsigned in host-relative location
+static inline void storeU16( uint8_t* loc, uint16_t val ) {
+    *( (uint16_t*)loc ) = val;
+}
 
-//Retrieve 4 byte unsigned integer from location
-uint32_t get4Byte(uint8_t* loc);
+//Store a 4 byte unsigned in host-relative location
+static inline void storeU32( uint8_t *loc, uint32_t val ) {
+    *( (uint32_t*)loc ) = val;
+}
 
-//Store a 2 byte unsigned short in location, emulation mapped
-void store2Byte(uint16_t loc, uint16_t val);
+#else
+// Read a 2 byte unsigned in host-relative location
+static inline uint16_t readU16( uint8_t *loc ) {
+    return ( (uint16_t)loc[ 1 ] << 8 ) | (uint16_t)loc[ 0 ];
+}
 
-//Store a 4 byte unsigned short in location, emulation mapped
-void store4Byte(uint32_t loc, uint32_t val);
+// Read a 3 byte unsigned in host-relative location, delivered in a 4-byte value
+static inline uint32_t readU24( uint8_t *loc ) {
+        return ( (uint32_t)loc[ 2 ] << 16 )
+            | ( (uint32_t)loc[ 1 ] << 8 )
+            | ( (uint32_t)loc[ 0 ] );
+}
 
-//Store a 2 byte unsigned short in local space
-void store2Byte_local(uint8_t* loc, uint16_t val);
+// Read a 4 byte unsigned in host-relative location
+static inline uint32_t readU32( uint8_t *loc ) {
+    return ( (uint32_t)loc[ 3 ] << 24 ) 
+            | ( (uint32_t)loc[ 2 ] << 16 )
+            | ( (uint32_t)loc[ 1 ] << 8 )
+            | ( (uint32_t)loc[ 0 ] );
+}
 
-//Generate a 3 byte value
-uint32_t gen3Byte(uint8_t bank, uint16_t addr);
+//Store a 2 byte unsigned in host-relative location
+static inline void storeU16( uint8_t *loc, uint16_t val ) {
+    loc[ 1 ] = (uint8_t)( ( val >> 8 ) & 0x00FF );
+    loc[ 0 ] = (uint8_t)( val & 0x00FF );
+}
 
-uint32_t getMappedInstructionAddr(uint8_t bank, uint16_t addr);
+//Store a 4 byte unsigned in host-relative location
+static inline void storeU32( uint8_t *loc, uint32_t val ) {
+    loc[ 3 ] = (uint32_t)( ( val >> 24 ) & 0x000000FF );
+    loc[ 2 ] = (uint32_t)( ( val >> 16 ) & 0x000000FF );
+    loc[ 1 ] = (uint32_t)( ( val >> 8 ) & 0x000000FF );
+    loc[ 0 ] = (uint32_t)( val & 0x000000FF );
+}
+#endif
 
-_Bool is_reserved(const uint8_t *addr);
+bool is_reserved(const uint8_t *addr);
 
 #endif
