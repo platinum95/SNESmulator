@@ -85,21 +85,111 @@ typedef struct DspState {
 
 static DspState dspState;
 
-uint8_t *accessDspRegister( uint8_t reg, bool writeLine ) {
-    printf( "%i Access to DSP register %02x\n", writeLine, reg );
+static uint8_t dspAddressLatch;
+
+void accessDspAddressLatch( uint8_t *dataBus, bool writeLine ) {
+    // TODO - maybe add a LIKELY tag here
+    if ( writeLine ) {
+        dspAddressLatch = *dataBus;
+    }
+    else {
+        *dataBus = dspAddressLatch;
+    }
+}
+
+static const char* voiceNameLookup[ 0xA ] = {
+    "VOL (L)",
+    "VOL (R)",
+    "P (L)",
+    "P (H)",
+    "SRCN",
+    "ADSR (1)",
+    "ADSR (2)",
+    "GAIN",
+    "ENVX",
+    "OUTX"
+};
+
+static const char* lowerCNameLookup[ 0x8 ] = {
+    "MVOL (L)",
+    "MVOL (R)",
+    "EVOL (L)",
+    "EVOL (R)",
+    "KON",
+    "KOFF",
+    "FLG",
+    "ENDX"
+};
+
+static const char* lowerDNameLookup[ 0x8 ] = {
+    "EFB",
+    "N/A (ERROR)",
+    "PMON",
+    "NON",
+    "EON",
+    "DIR",
+    "ESA",
+    "EDL"
+};
+
+static inline void printAccess( uint8_t *dataBus, bool writeLine ) {
+    uint8_t *hostMemory = ( (uint8_t*) &registers ) + dspAddressLatch;
+    if ( writeLine ) {
+        printf( "DSP %02x WRTE %02x", dspAddressLatch, *dataBus );
+    }
+    else {
+        printf( "DSP %02x READ %02x", dspAddressLatch, *hostMemory );
+    }
     
-    uint8_t lowerOffset = reg & 0x0F;
-    if ( lowerOffset == 0xA || lowerOffset == 0xB || lowerOffset == 0xE || reg == 0x1D || reg >= 0x80 ) {
-        return NULL;
+    // Optional extra info
+    uint8_t lowerOffset = dspAddressLatch & 0x0F;
+    uint8_t upperOffset = (uint8_t)( ( dspAddressLatch >> 4 ) & 0x00FF );
+    if ( lowerOffset < 0xA ) {
+        // Voice access
+        printf( " -- Voice %i -- %s", upperOffset, voiceNameLookup[ lowerOffset ] );
+    }
+    else if ( lowerOffset == 0x0F ) {
+        // FIR coefficient
+        printf( " -- FIR %i", upperOffset );
+    }
+    else if ( lowerOffset == 0x0C ) {
+        printf( " -- %s", lowerCNameLookup[ upperOffset ] );
+    }
+    else if ( lowerOffset == 0x0D ) {
+        printf( " -- %s", lowerDNameLookup[ upperOffset ] );
+    }
+    else {
+        printf( "-- ERROR" );
     }
 
-    return ( (uint8_t*) &registers ) + reg;
+    printf( "\n" );
+}
+
+void accessDspRegister( uint8_t *dataBus, bool writeLine ) {
+    uint8_t lowerOffset = dspAddressLatch & 0x0F;
+    if ( lowerOffset == 0xA || lowerOffset == 0xB || lowerOffset == 0xE || dspAddressLatch == 0x1D || dspAddressLatch >= 0x80 ) {
+        // TODO - maybe signal here
+        printf( "Invalid DSP access\n" );
+        return;
+    }
+    printAccess( dataBus, writeLine );
+    uint8_t *hostMemory = ( (uint8_t*) &registers ) + dspAddressLatch;
+
+     if ( writeLine ) {
+        *hostMemory = *dataBus;
+    }
+    else {
+        *dataBus = *hostMemory;
+    }
+
+    return;
 }
 
 void dspInitialise() {
     memset( &registers, 0x00, sizeof( Registers ) );
     memset( &dspState, 0x00, sizeof( DspState ) );
     registers.FLG = ( 1 << 7 ) | ( 1 << 6 ); // Reset, Mute
+    dspAddressLatch = 0x00;
 }
 
 void dspTick() {
@@ -132,7 +222,7 @@ void dspTick() {
             }
         }
 
-        VoiceRegisters *voice = (VoiceRegisters*) accessDspRegister( voiceId * 0x10, false );
+        VoiceRegisters *voice = (VoiceRegisters*)( ( (uint8_t*) &registers ) + ( voiceId * 0x10 ) );
         bool keyOff = registers.KOF & mask;
         bool noiseOn = registers.NOV & mask;
         bool pmodOn = ( registers.PMON & 0xFE ) & mask;

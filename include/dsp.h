@@ -6,6 +6,7 @@
 
 void dspInitialise();
 void dspTick();
-uint8_t *accessDspRegister( uint8_t reg, bool writeLine );
+void accessDspAddressLatch( uint8_t *dataBus, bool writeLine );
+void accessDspRegister( uint8_t *dataBus, bool writeLine );
 
 #endif //DSP_H

@@ -232,12 +232,13 @@ static inline void spcRegisterAccess( uint16_t addressBus, uint8_t *dataBus, boo
     else if ( addressBus <= 0xF3 ) {
         if ( addressBus == 0x0F2 ) {
             hostAddress = &registers->dspAddress;
+            accessDspAddressLatch( dataBus, writeLine );
         }
         else 
         {
-            accessDspRegister( registers->dspAddress, writeLine );
-            return;
+            accessDspRegister( dataBus, writeLine );
         }
+        return;
     }
     else if ( addressBus <= 0xF7 ) {
         // Communication ports
