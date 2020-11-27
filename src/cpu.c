@@ -32,11 +32,11 @@ static bool inEmulationMode = 1;
 static uint16_t p_register;
 
 static uint16_t accumulator;
-static uint16_t program_counter;
-static uint16_t stack_pointer;
-static uint16_t data_bank_register;
-static uint8_t program_bank_register;
-static uint16_t direct_page;
+static uint16_t PC;
+static uint16_t SP;
+static uint8_t DBR;
+static uint8_t PBR;
+static uint16_t DP;
 static uint16_t X, Y;
 static uint8_t emulation_flag; //emulation flag, lowest bit only
 
@@ -56,28 +56,31 @@ void InitialiseCpu( RomTypes romType ) {
 
     // TODO - get actual entry point addresses
     if ( romType == LoRom )
-        program_counter = 0xFF70;
+        PC = 0xFF70;
     else if ( romType == HiRom )
-        program_counter =  0xFF70;
+        PC =  0xFF70;
 
-    program_bank_register = 0x00;
-    stack_pointer = 0x8000;
-    direct_page = (uint16_t)0x00;
+    PBR = 0x00;
+    SP = 0x01FF;//0x8000;
+    DP = (uint16_t)0x00;
     p_register = 0x34;
     inEmulationMode = 0x01;
     emulation_flag = 0x01;
 }
 
-struct execution createEx() {
-    struct execution ex;
-    ex.program_bank_register = program_bank_register;
-    ex.program_counter = program_counter;
-    ex.accumulator = accumulator;
-    ex.X = X;
-    ex.Y = Y;
-    ex.emulation_mode = inEmulationMode ? 1 : 0;
-    ex.p_register = p_register;
-    return ex;
+ExecutionState GetExecutionState() {
+    ExecutionState state;
+    state.PBR = PBR;
+    state.PC = PC;
+    state.A = accumulator;
+    state.X = X;
+    state.Y = Y;
+    state.emulationMode = inEmulationMode ? 1 : 0;
+    state.pRegister = p_register;
+    state.DP = DP;
+    state.DB = DBR;
+    state.SP = SP;
+    return state;
 }
 
 uint8_t prev_instr = 0;
@@ -86,34 +89,35 @@ uint8_t prev_instr = 0;
 uint16_t currentOperationOffset;
 uint16_t nextOperationOffset;
 void ExecuteNextInstruction() {
-    static int counter = 0;
-    counter++;
-    if (counter == 1)
-        start_comp();
-    
-    struct execution currentEx = createEx();
-    uint8_t comparison = compare( currentEx );
-    if ( comparison != 0 ) {
-        // Current max score - 8544
-//        printf( "Mismatch\n" );
-    }
-    MemoryAddress instructionAddress = (MemoryAddress){ program_bank_register, program_counter };
+    MemoryAddress instructionAddress = (MemoryAddress){ PBR, PC };
 
     instructionAddress.bank &= ~0x80;
     uint8_t currentOpcode = *snesMemoryMap( instructionAddress );
-    
-    printf( "\n%03i | %02x:\n", counter, currentOpcode );
 
+#if 0
+    static int counter = 0;
+    counter++;
+    if ( counter == 1 ) {
+        start_comp();
+    }
+    uint8_t comparison = compare( GetExecutionState() );
+    if ( comparison != 0 && comparison != 7 ) {
+        // Current max score - 45873
+        printf( "Mismatch\n" );
+    }
+
+    printf( "\n%03i | %02x:\n", counter, currentOpcode );
+#endif    
     prev_instr = currentOpcode;
     
-    currentOperationOffset = program_counter;
+    currentOperationOffset = PC;
     InstructionEntry *entry = &instructions[ currentOpcode ];
-    nextOperationOffset = program_counter + entry->bytes;
+    nextOperationOffset = PC + entry->bytes;
 
     // Opcode consumed, inc PC for getting operand(s)
-    ++program_counter;
+    ++PC;
     entry->operation();
-    program_counter = nextOperationOffset;
+    PC = nextOperationOffset;
 
 }
 
@@ -133,15 +137,15 @@ static inline MemoryAddress GetBusAddress( uint8_t bank, uint16_t offset ) {
 }
 
 static inline MemoryAddress GetDataBankAddress( uint16_t offset ) {
-    return GetBusAddress( data_bank_register, offset );
+    return GetBusAddress( DBR, offset );
 }
 
 static inline MemoryAddress GetProgramBankAddress( uint16_t offset ) {
-    return GetBusAddress( program_bank_register, offset );
+    return GetBusAddress( PBR, offset );
 }
 
 static inline uint8_t* immediate() {
-    return snesMemoryMap( GetProgramBankAddress( program_counter++ ) );
+    return snesMemoryMap( GetProgramBankAddress( PC++ ) );
 }
 
 static inline uint8_t immediateU8() {
@@ -150,7 +154,7 @@ static inline uint8_t immediateU8() {
 
 static inline uint16_t immediateU16() {
     uint16_t val = readU16( immediate() );
-    ++program_counter;
+    ++PC;
     return val;
 }
 
@@ -163,7 +167,7 @@ static inline int16_t relativeLong() {
 }
 
 static inline uint8_t* direct( uint16_t offset ) {
-    return snesMemoryMap( GetBusAddress( 0x00, direct_page + *immediate() + offset ) );
+    return snesMemoryMap( GetBusAddress( 0x00, DP + *immediate() + offset ) );
 }
 
 static inline uint8_t* directIndexedIndirect( uint16_t indexOffset ) {
@@ -197,7 +201,7 @@ static inline uint8_t* directIndirectIndexedYLong() {
 
 static inline uint16_t absoluteAsAddr( uint16_t offset ) {
     uint16_t addr = readU16( immediate() ) + offset;
-    ++program_counter;
+    ++PC;
     return addr;
 }
 
@@ -217,7 +221,7 @@ static inline uint8_t* absoluteIndexedY() {
 static inline MemoryAddress absoluteLongAsAddr( uint16_t offset ) {
     // TODO - not sure how to handle overflow here, ie does bank increment?
     MemoryAddress address = GetBusAddressFromLong( readU24( immediate() ) );
-    program_counter += 3;
+    PC += 3;
     address.offset += offset;
     return address;
 }
@@ -233,19 +237,19 @@ static inline uint8_t* absoluteLongIndexedX() {
 
 static inline uint8_t* absoluteIndirect() {
     uint16_t absolute = readU16( immediate() );
-    ++program_counter;
+    ++PC;
     return snesMemoryMap( GetDataBankAddress( absolute ) );
 }
 
 static inline uint8_t* absoluteIndexedXIndirect() {
     uint16_t absolute = readU16( immediate() );
-    ++program_counter;
+    ++PC;
     return snesMemoryMap( GetDataBankAddress( absolute + X ) );
 }
 
 static inline uint8_t* stackRelative() {
     // TODO - should the relative part be signed?
-    return snesMemoryMap( GetBusAddress( 0x00, stack_pointer + *immediate() ) );
+    return snesMemoryMap( GetBusAddress( 0x00, SP + *immediate() ) );
 }
 
 static inline uint8_t* stackRelativeIndirectIndexedY() {
@@ -262,7 +266,7 @@ static inline uint8_t* stackRelativeIndirectIndexedY() {
 // TODO - stack accessors should handle emulation mode
 
 static inline void pushU8( uint8_t val ) {
-    *snesMemoryMap( GetBusAddress( 0x00, stack_pointer-- ) ) = val;
+    *snesMemoryMap( GetBusAddress( 0x00, SP-- ) ) = val;
 }
 
 static inline void pushU16( uint16_t val ) {
@@ -271,7 +275,7 @@ static inline void pushU16( uint16_t val ) {
 }
  
 static inline uint8_t popU8() {
-    return *snesMemoryMap( GetBusAddress( 0x00, ++stack_pointer ) );
+    return *snesMemoryMap( GetBusAddress( 0x00, ++SP ) );
 }
 
 static inline uint16_t popU16() {
@@ -384,25 +388,25 @@ static inline uint16_t popU16() {
  //ADC(_dp_, X)    61    DP Indexed Indirect, X    NV� - ZC    2
  void f61_ADC(){
      ADC( directIndexedXIndirect() );
-     ++program_counter;
+     ++PC;
  }
  
  //ADC sr, S    63    Stack Relative    NV� - ZC    2
  void f63_ADC(){
      ADC( stackRelative() );
-     ++program_counter;
+     ++PC;
  }
  
  //ADC dp    65    Direct Page    NV� - ZC    2
  void f65_ADC(){
      ADC( direct( 0 ) );
-     ++program_counter;
+     ++PC;
  }
  
  //ADC[_dp_]    67    DP Indirect Long    NV� - ZC    2
  void f67_ADC(){
      ADC( directIndirectLong() );
-     ++program_counter;
+     ++PC;
  }
  
  //ADC #const    69    Immediate    NV� - ZC    2/3
@@ -417,62 +421,62 @@ static inline uint16_t popU16() {
  //ADC addr    6D    Absolute    NV� - ZC    3
  void f6D_ADC(){
      ADC( absolute( 0 ) );
-     ++program_counter;
+     ++PC;
  }
  
  //ADC long    6F    Absolute Long    NV� - ZC    4
  void f6F_ADC(){
      ADC( absoluteLong( 0 ) );
-     ++program_counter;
+     ++PC;
  }
  
  //ADC(dp), Y    71    DP Indirect Indexed, Y    NV� - ZC    2
  void f71_ADC(){
      ADC( directIndirectIndexedY() );
-     ++program_counter;
+     ++PC;
  }
  
   //ADC(_dp_)    72    DP Indirect    NV� - ZC    2
  void f72_ADC(){
      ADC( directIndirect() );
-    ++program_counter;
+    ++PC;
 }
 
  //ADC(_sr_, S), Y    73    SR Indirect Indexed, Y    NV� - ZC    2
 void f73_ADC(){
     ADC( stackRelativeIndirectIndexedY() );
-    ++program_counter;
+    ++PC;
 }
 
  //ADC dp, X    75    DP Indexed, X    NV� - ZC    2
 void f75_ADC(){
     ADC( direct( X ) );
-    ++program_counter;
+    ++PC;
 }
 
  //ADC[_dp_], Y    77    DP Indirect Long Indexed, Y    NV� - ZC    2
 void f77_ADC(){
     // TODO - verify
     ADC( directIndirectIndexedYLong() );
-    ++program_counter;
+    ++PC;
 }
 
  //ADC addr, Y    79    Absolute Indexed, Y    NV� - ZC    3
 void f79_ADC(){
     ADC( absoluteIndexedY() );
-    ++program_counter;
+    ++PC;
 }
 
  //ADC addr, X    7D    Absolute Indexed, X    NV� - ZC    3
 void f7D_ADC(){
     ADC( absoluteIndexedX() );
-    ++program_counter;
+    ++PC;
 }
 
  //ADC long, X    7F    Absolute Long Indexed, X    NV� - ZC    4
 void f7F_ADC(){
     ADC( absoluteLongIndexedX() );
-    ++program_counter;
+    ++PC;
 }
 
 #pragma endregion
@@ -685,7 +689,7 @@ void f70_BVS(){
 void f00_BRK(){
     // TODO 
     call_stack[ cs_counter++ ] = nextOperationOffset;
-    program_counter = 0xFFE6;
+    PC = 0xFFE6;
 }
 
 ////BRL label    82    Program Counter Relative Long        3
@@ -953,7 +957,7 @@ void fCC_CPY(){
 ////COP const    2    Stack / Interrupt    � - DI�    2
 void f02_COP() {
     call_stack[ cs_counter++] = nextOperationOffset;
-    program_counter = 0xFFE4;
+    PC = 0xFFE4;
 }
 
 #pragma region INC_DEC
@@ -1173,20 +1177,20 @@ static inline void JMP( uint8_t *O1 ) {
 
 static inline void JMPL( uint8_t *O1 ) {
     uint32_t addr = readU24( O1 );
-    program_bank_register = ( addr >> 16 ) & 0x00FF;
+    PBR = ( addr >> 16 ) & 0x00FF;
     nextOperationOffset = addr & 0xFFFF;
 }
 
 ////JMP addr    4C    Absolute        3
 void f4C_JMP(){
     JMP( immediate( 0 ) );
-    ++program_counter;
+    ++PC;
 }
 
 ////JMP long    5C    Absolute Long        4
 void f5C_JMP(){
     JMPL( immediate() );
-    program_counter += 2;
+    PC += 2;
 }
 
 ////JMP(_addr_)    6C    Absolute Indirect        3
@@ -1207,7 +1211,7 @@ void fDC_JMP(){
 }
 
 static inline void JSR( uint8_t *O1 ) {
-    pushU16( program_counter );
+    pushU16( PC );
     JMP( O1 );
 }
 
@@ -1218,8 +1222,8 @@ void f20_JSR(){
 
 ////JSR or JSL long    22    Absolute Long        4
 void f22_JSR(){
-    pushU8( program_bank_register );
-    pushU16( program_counter + 2 );
+    pushU8( PBR );
+    pushU16( PC + 2 );
     JMPL( immediate( 0 ) );
 }
 
@@ -1442,6 +1446,7 @@ void f54_MVN(){
 
     uint8_t destBank = *immediate();
     uint8_t srcBank = *immediate();
+    DBR = destBank;
 
     uint8_t *src = snesMemoryMap( GetBusAddress( srcBank, X ) );
     uint8_t *dest = snesMemoryMap( GetBusAddress( destBank, Y ) );
@@ -1463,7 +1468,8 @@ void f44_MVP(){
 
     uint8_t destBank = *immediate();
     uint8_t srcBank = *immediate();
-
+    DBR = destBank;
+    
     uint8_t *src = snesMemoryMap( GetBusAddress( srcBank, X ) );
     uint8_t *dest = snesMemoryMap( GetBusAddress( destBank, Y ) );
     uint16_t toMove = accumulator + 1;
@@ -1581,7 +1587,7 @@ void f1F_ORA(){
 ////PEA addr    F4    Stack(Absolute)        3
 void fF4_PEA(){
     pushU16( readU16( immediate() ) );
-    ++program_counter;
+    ++PC;
 }
 
 ////PEI(dp)    D4    Stack(DP Indirect)        2
@@ -1593,7 +1599,7 @@ void fD4_PEI(){
 void f62_PER(){
     // TODO - verify signed/unsigned appropriateness
     pushU16( nextOperationOffset + (int16_t)readU16( immediate() ) );
-    ++program_counter;
+    ++PC;
 }
 
 ////PHA    48    Stack(Push)        1
@@ -1608,17 +1614,17 @@ void f48_PHA(){
 
 ////PHB    8B    Stack(Push)        1
 void f8B_PHB(){
-    pushU8( data_bank_register );
+    pushU8( DBR );
 }
 
 ////PHD    0B    Stack(Push)        1
 void f0B_PHD(){
-    pushU16( direct_page );
+    pushU16( DP );
 }
 
 ////PHK    4B    Stack(Push)        1
 void f4B_PHK(){
-    pushU8( (uint8_t) program_bank_register );
+    pushU8( (uint8_t) PBR );
 }
 
 ////PHP    8    Stack(Push)        1
@@ -1672,12 +1678,12 @@ void f68_PLA(){
 
 ////PLB    AB    Stack(Pull)    N��Z - 1
 void fAB_PLB(){
-    PL( (uint8_t*) &data_bank_register, true );
+    PL( (uint8_t*) &DBR, true );
 }
 
 ////PLD    2B    Stack(Pull)    N��Z - 1
 void f2B_PLD(){
-    PL( (uint8_t*) &direct_page, false );
+    PL( (uint8_t*) &DP, false );
 }
 
 ////PLP    28    Stack(Pull)    N��Z - 1
@@ -1808,14 +1814,14 @@ void f40_RTI(){
     p_register = popU8();
     nextOperationOffset = popU16();
     if ( !inEmulationMode ) {
-        program_bank_register = popU8();
+        PBR = popU8();
     }
 }
 
 ////RTL    6B    Stack(RTL)        1
 void f6B_RTL(){
     nextOperationOffset = popU16() + 1;
-    program_bank_register = popU8();
+    PBR = popU8();
 }
 
 ////RTS    60    Stack(RTS)        1
@@ -2210,24 +2216,24 @@ void fA8_TAY() {
 
 ////TCD    5B    Implied    N��Z - 1
 void f5B_TCD() {
-    direct_page = accumulator;
+    DP = accumulator;
     p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG ) )
-        | ( ( direct_page == 0 ) ? ZERO_FLAG : 0x00 )
-        | ( ( direct_page & 0x8000 ) ? NEGATIVE_FLAG : 0x00 );
+        | ( ( DP == 0 ) ? ZERO_FLAG : 0x00 )
+        | ( ( DP & 0x8000 ) ? NEGATIVE_FLAG : 0x00 );
 }
 
 ////TCS    1B    Implied        1
 void f1B_TCS() {
-    stack_pointer = accumulator;
+    SP = accumulator;
     if ( inEmulationMode ) {
-        stack_pointer &= 0x00FF;
-        stack_pointer |= 0x0100;
+        SP &= 0x00FF;
+        SP |= 0x0100;
     }
 }
 
 ////TDC    7B    Implied    N��Z - 1
 void f7B_TDC() {
-    accumulator = direct_page;
+    accumulator = DP;
     p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG ) )
         | ( ( accumulator == 0 ) ? ZERO_FLAG : 0x00 )
         | ( ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : 0x00 );
@@ -2235,7 +2241,7 @@ void f7B_TDC() {
 
 ////TSC    3B    Implied    N��Z - 1
 void f3B_TSC(){
-    accumulator = stack_pointer;
+    accumulator = SP;
     p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG ) )
         | ( ( accumulator == 0 ) ? ZERO_FLAG : 0x00 )
         | ( ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : 0x00 );
@@ -2243,7 +2249,7 @@ void f3B_TSC(){
 
 ////TSX    BA    Implied    N��Z - 1
 void fBA_TSX(){
-    X = stack_pointer;
+    X = SP;
     uint16_t negative = 0x00;
     if ( p_register & X_FLAG ) {
         X &= 0x00FF;
@@ -2279,10 +2285,10 @@ void f8A_TXA(){
 ////TXS    9A    Implied        1
 void f9A_TXS(){
     if ( inEmulationMode || ( p_register & X_FLAG ) ) {
-        stack_pointer = X & 0x00FF;
+        SP = X & 0x00FF;
     }
     else {
-        stack_pointer = X;
+        SP = X;
     }
 }
 
@@ -2364,7 +2370,7 @@ void fFB_XCE(){
     
     inEmulationMode = carryVal;
 
-    program_counter++;
+    PC++;
 }
 
 static InstructionEntry instructions[ 0x100 ] = {

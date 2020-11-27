@@ -1,5 +1,6 @@
 #include "system.h"
 #include "cartridge.h"
+#include "dsp.h"
 #include "spc700.h"
 #include "ram.h"
 #include "cpu.h"
@@ -50,7 +51,7 @@ int startup() {
     spc700_initialise();
     memset( reserved_memory, 0x00, 0x1000 );
     memset( &reserved_memory[0x1000], 0x80, 0x1000 );
-
+    dspInitialise();
     return 0;
 }
 
@@ -67,6 +68,7 @@ void cycle() {
         else {
             ExecuteNextInstruction();
             spc700_execute_next_instruction();
+            dspTick();
         }
         cycle_counter++;
     }
@@ -138,7 +140,7 @@ uint8_t *accessAddressFromBank_hiRom( MemoryAddress address ) {
         //Hardware addresses
         else if (address.offset <= 0x5FFF ) {
             if ( address.offset >= 0x2140 && address.offset < 0x2144 )
-                return access_spc_snes_mapped( address.offset );
+                return accessSpcComPort( address.offset - 0x2140, true ); // TODO
             else
                 return &hardware_registers[ address.offset ];
         }

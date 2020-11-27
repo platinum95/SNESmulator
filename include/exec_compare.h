@@ -1,15 +1,18 @@
 #pragma once
+#include <stdbool.h>
 
-struct execution {
-    uint8_t program_bank_register;
-    uint16_t program_counter;
-
-    uint16_t accumulator;
-    uint16_t X, Y;
-    uint8_t p_register;
-    uint8_t emulation_mode;
-};
+typedef struct ExecutionState {
+    uint8_t PBR;
+    uint16_t PC;
+    uint16_t A;
+    uint16_t X;
+    uint16_t Y;
+    uint16_t SP;
+    uint16_t DP;
+    uint8_t DB;
+    uint8_t pRegister;
+    bool emulationMode;
+} ExecutionState;
 
 int start_comp();
-
-uint8_t compare(struct execution A);
+uint8_t compare( struct ExecutionState A );

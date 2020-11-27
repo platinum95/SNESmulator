@@ -1,6 +1,8 @@
 
 #include "spc700.h"
 
+#include "dsp.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -46,6 +48,18 @@ Basic memory map
 
 // TODO - other compilers
 #define ATTR_PACKED __attribute__((__packed__))
+#define UNUSED2(x) (void)(x)
+
+
+/* Status register flags */
+#define SPC_CARRY_FLAG  0x1
+#define SPC_ZERO_FLAG 0x2
+#define SPC_INTERRUPT_FLAG 0x04
+#define SPC_HALF_CARRY_FLAG 0x08
+#define SPC_BREAK_FLAG 0x10
+#define SPC_P_FLAG 0x20
+#define SPC_OVERFLOW_FLAG 0x40
+#define SPC_NEGATIVE_FLAG 0x80
 
 typedef struct SPC700InstructionEntry {
     void (*instruction)();
@@ -66,22 +80,26 @@ typedef struct ATTR_PACKED Registers {
     uint8_t port3;
     uint8_t memory0;
     uint8_t memory1;
-    uint8_t timer0;
-    uint8_t timer1;
-    uint8_t timer2;
-    uint8_t counter0;
-    uint8_t counter1;
-    uint8_t counter2;
+    uint8_t timer0Target;
+    uint8_t timer1Target;
+    uint8_t timer2Target;
+    uint8_t timer0counter;
+    uint8_t timer1counter;
+    uint8_t timer2counter;
 } Registers;
 
-uint8_t *spc_memory_map( uint16_t addr );
+static inline uint8_t spcMemoryMapRead( uint16_t addr );
+static inline uint16_t spcMemoryMapReadU16( uint16_t addr ); // TODO - readU16 may need to know if page can increment, or just offset
+static inline void spcMemoryMapWrite( uint16_t addr, uint8_t value );
+static inline void spcMemoryMapWriteU16( uint16_t addr, uint16_t value ); // TODO - writeU16 may need to know if page can increment, or just offset
 
 /* Memory and registers */
-static uint8_t spc_memory[ 0xFFFF + 0x01 ];
-static uint16_t program_counter, next_program_counter, curr_program_counter;
+static uint8_t APUMemory[ 0xFFFF + 0x01 ];
+static uint16_t PC, next_program_counter, curr_program_counter;
 static uint8_t A, X, Y, SP, PSW;
-static Registers* registers = (Registers*)( spc_memory + 0X00F0 );
+static Registers* registers = (Registers*)( APUMemory + 0X00F0 );
 static uint8_t opCycles;
+static uint8_t CPUWriteComPorts[ 4 ];
 
 static uint8_t IPL_ROM[ 64 ] = {
     0xCD, 0xEF, 0xBD, 0xE8, 0x00, 0xC6, 0x1D, 0xD0, 0xFC, 0x8F, 0xAA, 0xF4, 0x8F, 0xBB, 0xF5, 0x78,
@@ -90,479 +108,680 @@ static uint8_t IPL_ROM[ 64 ] = {
     0xF6, 0xDA, 0x00, 0xBA, 0xF4, 0xC4, 0xF4, 0xDD, 0x5D, 0xD0, 0xDB, 0x1F, 0x00, 0x00, 0xC0, 0xFF
 };
 
+static uint32_t timerClockCounter = 0;
+static uint8_t controlRegisterState = 0;
+static uint8_t timersStage2[ 3 ];
+
+// TODO - overhaul with better handling
+static inline void updateTimers() {
+    // SPC @ 1000KHz
+    // T0 and T1 @ 8KHz = 125 CPU cycles per tick
+    // T2 @ 64KHz = ~16 CPU cycles per tick
+    bool t0Enabled = registers->control & 0x01;
+    bool t1Enabled = registers->control & 0x02;
+    bool t2Enabled = registers->control & 0x04;
+
+    if ( t0Enabled && !( controlRegisterState & 0x01 ) ) {
+        // Zero Timer 0
+        timersStage2[ 0 ] = 0;
+        registers->timer0counter = 0;
+    }
+    if ( t1Enabled && !( controlRegisterState & 0x02 ) ) {
+        // Zero Timer 1
+        timersStage2[ 1 ] = 0;
+        registers->timer1counter = 0;
+    }
+    if ( t2Enabled && !( controlRegisterState & 0x04 ) ) {
+        // Zero Timer 2
+        timersStage2[ 2 ] = 0;
+        registers->timer2counter = 0;
+    }
+
+    ++timerClockCounter;
+
+    if ( timerClockCounter == 128 ) {
+        // T0/T1/T3 tick
+        if ( t0Enabled && registers->timer0Target == ++timersStage2[ 0 ] ) {
+            ++registers->timer0counter;
+        }
+        if ( t1Enabled && registers->timer1Target == ++timersStage2[ 1 ] ) {
+            ++registers->timer1counter;
+        }
+        if ( t2Enabled && registers->timer2Target == ++timersStage2[ 2 ] ) {
+            ++registers->timer2counter;
+        }
+        
+        timerClockCounter = 0;
+    }
+    else if ( t2Enabled && timerClockCounter % 16 == 0 ) {
+        // T2 tick
+        if ( registers->timer2Target == ++timersStage2[ 2 ] ) {
+            ++registers->timer2counter;
+        }
+    }
+}
+
 /* Initialise (power on) */
 void spc700_initialise() {
     registers->port0 = 0xAA;
     registers->port1 = 0xBB;
+    CPUWriteComPorts[ 0 ] = 0xAA;
+    CPUWriteComPorts[ 1 ] = 0xBB;
     SP = 0xEF;
-    program_counter = 0xFFC0;
-    memcpy( &spc_memory[ 0xFFC0 ], IPL_ROM, sizeof( IPL_ROM ) );
+    PC = 0xFFC0;
+    memcpy( &APUMemory[ 0xFFC0 ], IPL_ROM, sizeof( IPL_ROM ) );
+    controlRegisterState = registers->control;
 }
 
 /* Execute next instruction, update PC and cycle counter etc */
 void spc700_execute_next_instruction() {
-    curr_program_counter = program_counter;
-    SPC700InstructionEntry *entry = &instructions[ *spc_memory_map( program_counter++ ) ];
+    curr_program_counter = PC;
+    uint8_t opcode = spcMemoryMapRead( PC++ );
+    SPC700InstructionEntry *entry = &instructions[ opcode ];
     opCycles = entry->opCycles;
     next_program_counter = curr_program_counter + entry->opLength;
     entry->instruction();
-
     // Operation may mutate next_program_counter if it branches/jumps
-    program_counter = next_program_counter;
+    PC = next_program_counter;
+
+    updateTimers();
+    controlRegisterState = registers->control;
+    if ( controlRegisterState & 0x40 ) {
+        // Zero out f4/f5
+    }
+    if ( controlRegisterState & 0x20 ) {
+        // Zero out f6/f7
+    }
 }
 
 /* Access the 4 visible bytes from the CPU */
-uint8_t *access_spc_snes_mapped( uint16_t addr ) {
-    addr = addr - 0x2140 + 0x00f4;
-    
-    if ( addr < 0x00f4 || addr > 0x00f7 ) {
+uint8_t *accessSpcComPort( uint8_t port, bool writeLine ) {
+    if ( port > 3 ) {
         return NULL;
     }
-    return spc_memory_map( addr );
+    UNUSED2( writeLine );
+    //return writeLine ? &CPUWriteComPorts[ port ] : ( &registers->port0 ) + port;
+    return ( &registers->port0 ) + port;
 }
 
-/* Status register flags */
-#define SPC_CARRY_FLAG  0x1
-#define SPC_ZERO_FLAG 0x2
-#define SPC_INTERRUPT_FLAG 0x04
-#define SPC_HALF_CARRY_FLAG 0x08
-#define SPC_BREAK_FLAG 0x10
-#define SPC_P_FLAG 0x20
-#define SPC_OVERFLOW_FLAG 0x40
-#define SPC_NEGATIVE_FLAG 0x80
 
 /* 16 bit "register" from A and Y registers */
-static uint16_t getYA() {
+static inline uint16_t getYA() {
     return ( ( (uint16_t) Y ) << 8 ) | A;
 }
 
-static void storeYA( uint16_t YA ) {
+static inline void storeYA( uint16_t YA ) {
     Y = ( YA >> 8 ) & 0x00FF;
     A = YA & 0x00FF;
 }
 
-/* 16 bit stack pointer = 0x0100 | SP_register 
-static uint16_t get_stack_pointer() {
-    uint16_t toRet = SP;
-    return toRet | 0x01;
-}
-*/
+static inline void spcRegisterAccess( uint16_t addressBus, uint8_t *dataBus, bool writeLine ) {
 
-uint8_t *spc_memory_map( uint16_t addr ) {
-    if ( addr > 0x0000 && addr <= 0x00EF ) {
-        return &spc_memory[ addr ];
+    uint8_t *hostAddress;
+    // TODO - better access control
+    if ( addressBus == 0xF0 ) {
+        // Undocumented
+        // TODO
+        hostAddress = &APUMemory[ addressBus ];
     }
-    else if ( addr <= 0x00FF ) {
+    else if ( addressBus == 0xF1 ) {
+        // Control register
+        // TODO
+        hostAddress = &APUMemory[ addressBus ];
+    }
+    else if ( addressBus <= 0xF3 ) {
+        if ( addressBus == 0x0F2 ) {
+            hostAddress = &registers->dspAddress;
+        }
+        else 
+        {
+            accessDspRegister( registers->dspAddress, writeLine );
+            return;
+        }
+    }
+    else if ( addressBus <= 0xF7 ) {
+        // Communication ports
+        // TODO - can't handle read/write differently until the main CPU has a read/write-based bus
+        hostAddress = &APUMemory[ addressBus ];
+        /*
+        if ( writeLine ) {
+            APUMemory[ addressBus ] = *dataBus;
+            return;
+        }
+        else {
+            // Need to read what main CPU wrote
+            *dataBus = CPUWriteComPorts[ addressBus - 0xF7 ];
+            return;
+        }
+        */
+    }
+    else if ( addressBus <= 0xF9 ) {
+        // Regular memory
+        hostAddress = &APUMemory[ addressBus ];
+    }
+    else if ( addressBus <= 0xFC ) {
+        // Timers
+        // TODO
+        hostAddress = &APUMemory[ addressBus ];
+    }
+    else if ( addressBus <= 0xFF ) {
+        // Counters
+        // TODO
+        hostAddress = &APUMemory[ addressBus ];
+    }
+    else {
+        // Throw some error here
+        hostAddress = NULL;
+    }
+
+    if ( writeLine ) {
+        *hostAddress = *dataBus;
+    }
+    else {
+        *dataBus = *hostAddress;
+    }
+}
+
+// Might be better off breaking this into separate busRead and busWrite
+static inline void spcBusAccess( uint16_t addressBus, uint8_t* dataBus, bool writeLine ) {
+    // The if-block mapping can explicitly handle read-writes & return if required.
+    // Otherwise, we fall through and do a regular memory write
+
+    uint8_t *hostAddress = NULL;
+    if ( addressBus <= 0x00EF ) {
+        hostAddress = &APUMemory[ addressBus ];
+    }
+    else if ( addressBus <= 0x00FF ) {
         // Registers
-        return &spc_memory[ addr ];
+        spcRegisterAccess( addressBus, dataBus, writeLine );
+        return;
     }
-    else if ( addr <= 0x01FF ) {
+    else if ( addressBus <= 0x01FF ) {
         // Page 1 and Memory
-        return &spc_memory[ addr ];
+        hostAddress = &APUMemory[ addressBus ];
     }
     else { // if ( addr <= 0xFFFF )
         // Memory (Read/ReadWrite)/IPL Rom
         // TODO - adjust based on X reg
-        return &spc_memory[ addr ];
+        hostAddress = &APUMemory[ addressBus ];
+    }
+
+    if ( writeLine ) {
+        *hostAddress = *dataBus;
+    }
+    else {
+        *dataBus = *hostAddress;
     }
 }
 
-uint8_t *accessPageAddr( uint8_t addr ) {
-    return spc_memory_map( ( ( PSW & SPC_P_FLAG ) ? 0x0100 : 0x0000 ) + addr );
+static inline uint8_t spcMemoryMapRead( uint16_t addr ) {
+    uint8_t dataValue;
+    spcBusAccess( addr, &dataValue, false );
+    return dataValue;
 }
+
+// TODO - readU16 may need to know if page can increment, or just offset
+static inline uint16_t spcMemoryMapReadU16( uint16_t addr ){
+    uint16_t dataValue = spcMemoryMapRead( addr );
+    return dataValue | ( ( (uint16_t) spcMemoryMapRead( addr + 1 ) ) << 8 );
+}
+
+static inline void spcMemoryMapWrite( uint16_t addr, uint8_t value ) {
+    spcBusAccess( addr, &value, true );
+}
+
+// TODO - writeU16 may need to know if page can increment, or just offset
+static inline void spcMemoryMapWriteU16( uint16_t addr, uint16_t value ) {
+    spcMemoryMapWrite( addr, (uint8_t)( value & 0x00FF ) );
+    spcMemoryMapWrite( addr + 1, (uint8_t) ( value >> 8 ) );
+} 
 
 #pragma region SPC_ADDRESSING_MODES
-static uint8_t *immediate() {
-    return spc_memory_map( program_counter++ );
+static inline uint8_t immediate_new() {
+    return spcMemoryMapRead( PC++ );
 }
-static uint8_t immediate_8() {
-    return *immediate();
-}
-static uint8_t *indirect_X() {
-    return accessPageAddr( X );
-}
-
-static uint8_t *indirect_Y() {
-    return accessPageAddr( Y );
+static inline uint16_t absolute_new() {
+    uint16_t result = (uint16_t) immediate_new();
+    result |= ( (uint16_t) immediate_new() ) << 8;
+    return result;
 }
 
-/* // TODO - confirm that this isn't used
-static uint8_t indirect_Y_AI_8() {
-    uint8_t toRet = *indirect_Y();
-    ++Y;
-    return toRet;
+static inline uint16_t absoluteX_new() {
+    return absolute_new() + X;
 }
-static uint8_t indirect_X_AI_8() {
-    uint8_t toRet = *indirect_X();
-    ++X;
-    return toRet;
-}*/
-
-static uint8_t *direct( uint8_t offset ) {
-    return accessPageAddr( immediate_8() + offset );
-}
-static uint8_t direct_8( uint8_t offset ) {
-    return *direct( offset );
-}
-static uint16_t direct_16( uint8_t offset ) {
-    return readU16( direct( offset ) );
+static inline uint16_t absoluteY_new() {
+    return absolute_new() + Y;
 }
 
-/* // TODO - Confirm that this isn't used
-static uint16_t direct_indexed_X_16() {
-    return readU16( direct( X ) );
+static inline uint16_t getPageAddr_new( uint8_t offset ) {
+    uint16_t addr = (uint16_t)offset;
+    if ( PSW & SPC_P_FLAG ) {
+        addr += 0x0100;
+    }
+    return addr;
+}
+static inline uint16_t indirectX_new() {
+    return getPageAddr_new( X );
+}
+static inline uint16_t indirectY_new() {
+    return getPageAddr_new( Y );
+}
+static inline uint16_t direct_new( uint8_t offset ) {
+    return getPageAddr_new( immediate_new() + offset );
 }
 
-static uint8_t *direct_indexed_X_indirect() {
-    return spc_memory_map( direct_indexed_X_16() );
-}
-
-static uint8_t *x_indexed_indirect() {
-    return spc_memory_map( direct_16( X ) );
-}
-static uint8_t *indirect_y_indexed() {
-    return spc_memory_map( direct_16( 0 ) + Y );
-}
-*/
-
-static uint16_t absolute_addr() {
-    uint16_t word = readU16( spc_memory_map( program_counter ) );
-    program_counter += 2;
-    return word;
-}
-static uint8_t *absolute( uint8_t offset ) {
-    return spc_memory_map( absolute_addr() + offset );
-}
-
-static uint8_t absolute_membit( uint8_t **mem ) {
-    uint16_t operand = absolute_addr();
+static inline uint8_t absoluteMembit( uint16_t *addr ) {
+    uint16_t operand = absolute_new();
     uint8_t bitLoc = ( operand >> 13 ) & 0x0007;
-    uint16_t addr = operand & 0x1FFF;
-    *mem = spc_memory_map( addr );
+    *addr = operand & 0x1FFF;
     return bitLoc;
 }
 
 // DIRECT OPS START
-#define DIRECT_D_OP( op ) \
-    op( direct( 0 ) );
+#define DIRECT_D_WRITEOUT_OP( op ) \
+    uint16_t addr = direct_new( 0 ); \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ) ) );
 
 #define DIRECT_A_D_OP( op ) \
-    op( &A, direct( 0 ) );
+    op( A, spcMemoryMapRead( direct_new( 0 ) ) );
 
-#define DIRECT_D_A_OP( op ) \
-    op( direct( 0 ), &A );
+#define DIRECT_A_D_WRITEOUT_OP( op ) \
+    A = op( A, spcMemoryMapRead( direct_new( 0 ) ) );
+
+#define DIRECT_D_A_WRITEOUT_OP( op ) \
+    uint16_t addr = direct_new( 0 ); \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ), A ) );
+
+#define DIRECT_X_D_WRITEOUT_OP( op ) \
+    X = op( X, spcMemoryMapRead( direct_new( 0 ) ) );
 
 #define DIRECT_X_D_OP( op ) \
-    op( &X, direct( 0 ) );
+    op( X, spcMemoryMapRead( direct_new( 0 ) ) );
 
-#define DIRECT_D_X_OP( op ) \
-    op( direct( 0 ), &X );
+#define DIRECT_D_X_WRITEOUT_OP( op ) \
+    uint16_t addr = direct_new( 0 ); \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ), X ) );
+
+#define DIRECT_Y_D_WRITEOUT_OP( op ) \
+    Y = op( Y, spcMemoryMapRead( direct_new( 0 ) ) );
 
 #define DIRECT_Y_D_OP( op ) \
-    op( &Y, direct( 0 ) ); 
+    op( Y, spcMemoryMapRead( direct_new( 0 ) ) );
 
-#define DIRECT_D_Y_OP( op ) \
-    op( direct( 0 ), &Y );
+#define DIRECT_D_Y_WRITEOUT_OP( op ) \
+    uint16_t addr = direct_new( 0 ); \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ), Y ) );
+
+#define DIRECT_YA_D_WRITEOUT_OP( op ) \
+    uint16_t YA = getYA(); \
+    YA = op( YA, spcMemoryMapRead( direct_new( 0 ) ) ); \
+    storeYA( YA );
 
 #define DIRECT_YA_D_OP( op ) \
-    uint16_t YA = getYA(); \
-    op( &YA, direct( 0 ) ); \
-    storeYA( YA );
+    op( getYA(), spcMemoryMapRead( direct_new( 0 ) ) ); \
 // DIRECT OPS END
 
 // X-INDEXED DIRECT PAGE OPS START
-#define X_INDEXED_DIRECT_PAGE_DX_OP( op ) \
-    op( direct( X ) );
+#define X_INDEXED_DIRECT_PAGE_DX_WRITEOUT_OP( op ) \
+    uint16_t addr = direct_new( X ); \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ) ) );
 
-#define X_INDEXED_DIRECT_PAGE_Y_DX_OP( op ) \
-    op( &Y, direct( X ) );
+#define X_INDEXED_DIRECT_PAGE_Y_DX_WRITEOUT_OP( op ) \
+    Y = op( Y, spcMemoryMapRead( direct_new( X ) ) );
 
-#define X_INDEXED_DIRECT_PAGE_DX_Y_OP( op ) \
-    op( direct( X ), &Y );
+#define X_INDEXED_DIRECT_PAGE_DX_Y_WRITEOUT_OP( op ) \
+    uint16_t addr = direct_new( X ); \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ), Y ) );
+
+#define X_INDEXED_DIRECT_PAGE_A_DX_WRITEOUT_OP( op ) \
+    A = op( A, spcMemoryMapRead( direct_new( X ) ) );
 
 #define X_INDEXED_DIRECT_PAGE_A_DX_OP( op ) \
-    op( &A, direct( X ) );
+    op( A, spcMemoryMapRead( direct_new( X ) ) );
 
-#define X_INDEXED_DIRECT_PAGE_DX_A_OP( op ) \
-    op( direct( X ), &A );
+#define X_INDEXED_DIRECT_PAGE_DX_A_WRITEOUT_OP( op ) \
+    uint16_t addr = direct_new( X ); \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ), A ) );
 
 // Ordering here is the exception to the little-endian operands rule.
 // BBS $01.2, $05 is stored as <BBS.2> 01 02
 #define X_INDEXED_DIRECT_PAGE_DX_R_OP( op ) \
-    uint8_t nearLabel = immediate_8(); \
-    uint8_t *dp_X = direct( X ); \
-    op( dp_X, &nearLabel );
+    uint8_t nearLabel = immediate_new(); \
+    uint8_t dpX = spcMemoryMapRead( direct_new( X ) ); \
+    op( spcMemoryMapRead( dpX ), nearLabel );
 // X-INDEXED DIRECT PAGE OPS END
 
 // Y-INDEXED DIRECT PAGE OPS START
-#define Y_INDEXED_DIRECT_PAGE_X_DY_OP( op ) \
-    op( &X, direct( Y ) );
+#define Y_INDEXED_DIRECT_PAGE_X_DY_WRITEOUT_OP( op ) \
+    X = op( X, spcMemoryMapRead( direct_new( Y ) ) );
 
-#define Y_INDEXED_DIRECT_PAGE_DY_X_OP( op ) \
-    op( direct( Y ), &X );
+#define Y_INDEXED_DIRECT_PAGE_DY_X_WRITEOUT_OP( op ) \
+    uint16_t addr = direct_new( Y ); \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ), X ) );
 // Y-INDEXED DIRECT PAGE OPS END
 
 // INDIRECT OPS START
-#define INDIRECT_A_X_OP( op ) \
-    op( &A, indirect_X() );
+#define INDIRECT_A_X_WRITEOUT_OP( op ) \
+    A = op( A, spcMemoryMapRead( indirectX_new() ) );
 
-#define INDIRECT_X_A_OP( op ) \
-    op( indirect_X(), &A );
+#define INDIRECT_A_X_OP( op ) \
+    op( A, spcMemoryMapRead( indirectX_new() ) );
+
+#define INDIRECT_X_A_WRITEOUT_OP( op ) \
+    uint16_t addr = indirectX_new(); \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ), A ) );
 // INDIRECT OPS END
 
 // INDIRECT AUTO INC OPS START
-#define INDIRECT_AUTO_INC_X_A_OP( op ) \
-    op( indirect_X(), &A ); \
+#define INDIRECT_AUTO_INC_X_A_WRITEOUT_OP( op ) \
+    uint16_t addr = indirectX_new(); \
     ++X; \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ), A ) ); \
 
-#define INDIRECT_AUTO_INC_A_X_OP( op ) \
-    op( &A, indirect_X() ); \
+#define INDIRECT_AUTO_INC_A_X_WRITEOUT_OP( op ) \
+    A = op( A, spcMemoryMapRead( indirectX_new() ) ); \
     ++X; \
 // INDIRECT AUTO INC OPS END
 
 // DIRECT PAGE TO DIRECT PAGE OPS START
 // TODO - param ordering verification - Should be correct if little-endian
+#define DIRECT_PAGE_DIRECT_PAGE_WRITEOUT_OP( op ) \
+    uint8_t ds = spcMemoryMapRead( direct_new( 0 ) ); \
+    uint16_t ddAddr = direct_new( 0 ); \
+    spcMemoryMapWrite( ddAddr, op( spcMemoryMapRead( ddAddr ), ds ) ); \
+
 #define DIRECT_PAGE_DIRECT_PAGE_OP( op ) \
-    uint8_t *ds = direct( 0 ); \
-    uint8_t *dd = direct( 0 ); \
+    uint8_t ds = spcMemoryMapRead( direct_new( 0 ) ); \
+    uint8_t dd = spcMemoryMapRead( direct_new( 0 ) ); \
     op( dd, ds ); \
 // DIRECT PAGE TO DIRECT PAGE OPS END
 
 
 // INDIRECT PAGE TO INDIRECT PAGE OPS START
 // TODO - param ordering verification - Should be correct if little-endian
+#define INDIRECT_PAGE_INDIRECT_PAGE_WRITEOUT_OP( op ) \
+    uint8_t iY = spcMemoryMapRead( indirectY_new() ); \
+    uint16_t iXAddr = indirectX_new(); \
+    spcMemoryMapWrite( iXAddr, op( spcMemoryMapRead( iXAddr ), iY ) ); \
+
 #define INDIRECT_PAGE_INDIRECT_PAGE_OP( op ) \
-    uint8_t* iY = indirect_Y(); \
-    uint8_t* iX = indirect_X(); \
+    uint8_t iY = spcMemoryMapRead( indirectY_new() ); \
+    uint8_t iX = spcMemoryMapRead( indirectX_new() ); \
     op( iX, iY ); \
 // INDIRECT PAGE TO INDIRECT PAGE OPS END
 
 // IMMEDIATE TO DIRECT PAGE OPS START
 // TODO - param ordering verification - Should be correct if little-endian
+#define IMMEDIATE_TO_DIRECT_PAGE_WRITEOUT_OP( op ) \
+    uint8_t im = immediate_new(); \
+    uint16_t addr = direct_new( 0 ); \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ), im ) );
+
 #define IMMEDIATE_TO_DIRECT_PAGE_OP( op ) \
-    uint8_t *im = immediate(); \
-    uint8_t *dp = direct( 0 ); \
-    op( dp, im );
+    uint8_t im = immediate_new(); \
+    uint8_t dpVal = spcMemoryMapRead( direct_new( 0 ) ); \
+    op( dpVal, im );
 // IMMEDIATE TO DIRECT PAGE OPS END
 
 // DIRECT PAGE BIT OPS START
-#define DIRECT_PAGE_BIT_OP( op, bit ) \
-    op( direct( 0 ), 0x01 << bit );
+#define DIRECT_PAGE_BIT_WRITEOUT_OP( op, bit ) \
+    uint16_t addr = direct_new( 0 ); \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ), 0x01 << bit ) );
 // DIRECT PAGE BIT OPS END
 
 // DIRECT PAGE BIT RELATIVE OPS START
 // Ordering here is the exception to the little-endian operands rule.
 // BBS $01.2, $05 is stored as <BBS.2> 01 02
 #define DIRECT_PAGE_BIT_RELATIVE_OP( op, bit ) \
-    uint8_t d = direct_8( 0 ); \
-    uint8_t *r = immediate(); \
+    uint8_t d = spcMemoryMapRead( direct_new( 0 ) ); \
+    uint8_t r = immediate_new(); \
     op( d & ( 0x01 << bit ), r ); 
 // DIRECT PAGE BIT RELATIVE OPS END
 
 // ABSOLUTE BOOLEAN BIT OPS START
-// These take 1 or 2 bool inputs, and return a bool output value
-#define ABSOLUTE_BOOLEAN_BIT_BASE( op, outLoc, outMask, inVal ) \
-    (*outLoc) = ( (*outLoc) & ~outMask ) | ( op( inVal, *outLoc & outMask ) ? outMask : 0x00 );
+// static inline uint8_t absoluteMembit( uint16_t *addr ) 
 
-#define ABSOLUTE_BOOLEAN_BIT_MB_OP( op ) \
-    uint8_t *loc; \
-    uint8_t bit = absolute_membit( &loc ); \
-    uint8_t bMask = 0x01 << bit; \
-    *loc = ( *loc & ~bMask ) | ( op( *loc & bMask ) ? bMask : 0x00 );
+#define ABSOLUTE_BOOLEAN_BIT_MB_WRITEOUT_OP( op ) \
+    uint16_t addr; \
+    uint8_t mask = 1 << absoluteMembit( &addr ); \
+    uint8_t MB = spcMemoryMapRead( addr ); \
+    spcMemoryMapWrite( addr, op( MB & mask, MB, mask ) );
     
 #define ABSOLUTE_BOOLEAN_BIT_C_MB_OP( op ) \
-    uint8_t *loc; \
-    uint8_t bit = absolute_membit( &loc ); \
-    uint8_t bMask = 0x01 << bit; \
-    ABSOLUTE_BOOLEAN_BIT_BASE( op, &PSW, SPC_CARRY_FLAG, (*loc) & bMask );
+    uint16_t addr; \
+    uint8_t mask = 1 << absoluteMembit( &addr ); \
+    bool carrySet = PSW & SPC_CARRY_FLAG; \
+    PSW = ( PSW & ~SPC_CARRY_FLAG ) | ( op( carrySet, spcMemoryMapRead( addr ), mask ) ? SPC_CARRY_FLAG : 0x00 );
 
 #define ABSOLUTE_BOOLEAN_BIT_C_iMB_OP( op ) \
-    uint8_t *loc; \
-    uint8_t bit = absolute_membit( &loc ); \
-    uint8_t bMask = 0x01 << bit; \
-    ABSOLUTE_BOOLEAN_BIT_BASE( op, &PSW, SPC_CARRY_FLAG, (*loc) & bMask );
+    uint16_t addr; \
+    uint8_t mask = 1 << absoluteMembit( &addr ); \
+    bool carrySet = PSW & SPC_CARRY_FLAG; \
+    PSW = ( PSW & ~SPC_CARRY_FLAG ) | ( op( carrySet, ~spcMemoryMapRead( addr ), mask ) ? SPC_CARRY_FLAG : 0x00 );
 
-#define ABSOLUTE_BOOLEAN_BIT_MB_C_OP( op ) \
-    uint8_t *loc; \
-    uint8_t bit = absolute_membit( &loc ); \
-    uint8_t bMask = 0x01 << bit; \
-    ABSOLUTE_BOOLEAN_BIT_BASE( op, loc, bMask, PSW & SPC_CARRY_FLAG );
+// TODO - will only work if O1 and O2 are commutative
+#define ABSOLUTE_BOOLEAN_BIT_MB_C_WRITEOUT_OP( op ) \
+    uint16_t addr; \
+    uint8_t bit = absoluteMembit( &addr ); \
+    uint8_t mask = 1 << absoluteMembit( &addr ); \
+    bool carrySet = PSW & SPC_CARRY_FLAG; \
+    spcMemoryMapWrite( addr, op( carrySet, spcMemoryMapRead( addr ), mask ) );
+
 // ABSOLUTE BOOLEAN BIT OPS END
 
 // ABSOLUTE OPS START
 #define ABSOLUTE_a_addr_OP( op ) \
-    op( absolute_addr() );
+    op( absolute_new() );
 
-#define ABSOLUTE_a_OP( op ) \
-    op( absolute( 0 ) );
+#define ABSOLUTE_a_WRITEOUT_OP( op ) \
+    uint16_t addr = absolute_new( 0 ); \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ) ) );
+
+#define ABSOLUTE_A_a_WRITEOUT_OP( op ) \
+    A = op( A, spcMemoryMapRead( absolute_new( 0 ) ) );
 
 #define ABSOLUTE_A_a_OP( op ) \
-    op( &A, absolute( 0 ) );
+    op( A, spcMemoryMapRead( absolute_new( 0 ) ) );
 
-#define ABSOLUTE_a_A_OP( op ) \
-    op( absolute( 0 ), &A );
+#define ABSOLUTE_a_A_WRITEOUT_OP( op ) \
+    uint16_t addr = absolute_new( 0 ); \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ), A ) );
+
+#define ABSOLUTE_X_a_WRITEOUT_OP( op ) \
+    X = op( X, spcMemoryMapRead( absolute_new( 0 ) ) );
 
 #define ABSOLUTE_X_a_OP( op ) \
-    op( &X, absolute( 0 ) );
+    op( X, spcMemoryMapRead( absolute_new( 0 ) ) );
 
-#define ABSOLUTE_a_X_OP( op ) \
-    op( absolute( 0 ), &X );
+#define ABSOLUTE_a_X_WRITEOUT_OP( op ) \
+    uint16_t addr = absolute_new(); \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ), X ) );
+
+#define ABSOLUTE_Y_a_WRITEOUT_OP( op ) \
+    Y = op( Y, spcMemoryMapRead( absolute_new() ) );
 
 #define ABSOLUTE_Y_a_OP( op ) \
-    op( &Y, absolute( 0 ) );
+    op( Y, spcMemoryMapRead( absolute_new() ) );
 
-#define ABSOLUTE_a_Y_OP( op ) \
-    op( absolute( 0 ), &Y );
+#define ABSOLUTE_a_Y_WRITEOUT_OP( op ) \
+    uint16_t addr = absolute_new(); \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ), Y ) );
 // ABSOLUTE OPS END
 
-// ABSOLUTE X-INDEXED INDIRECT OPS START
+/* ABSOLUTE X-INDEXED INDIRECT OPS START
+//#define ABSOLUTE_X_INDEXED_INDIRECT_ADDR_OP( op )\
+//    op( absolute_addr() + X ); */
 #define ABSOLUTE_X_INDEXED_INDIRECT_ADDR_OP( op )\
-    op( absolute_addr() + X );
+    op( spcMemoryMapReadU16( absoluteX_new() ) );
 // ABSOLUTE X-INDEXED INDIRECT OPS END
 
 // X-INDEXED ABSOLUTE OPS START
-#define X_INDEXED_ABSOLUTE_A_aX_OP( op )\
-    op( &A, absolute( X ) );
+#define X_INDEXED_ABSOLUTE_A_aX_WRITEOUT_OP( op )\
+    A = op( A, spcMemoryMapRead( absoluteX_new() ) );
 
-#define X_INDEXED_ABSOLUTE_aX_A_OP( op )\
-    op( absolute( X ), &A );
+#define X_INDEXED_ABSOLUTE_A_aX_OP( op )\
+    op( A, spcMemoryMapRead( absoluteX_new() ) );
+
+#define X_INDEXED_ABSOLUTE_aX_A_WRITEOUT_OP( op )\
+    uint16_t addr = absoluteX_new(); \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ), A ) );
 // X-INDEXED ABSOLUTE OPS END
 
 // Y-INDEXED ABSOLUTE OPS START
-#define Y_INDEXED_ABSOLUTE_A_aY_OP( op )\
-    op( &A, absolute( Y ) );
+#define Y_INDEXED_ABSOLUTE_A_aY_WRITEOUT_OP( op )\
+    A = op( A, spcMemoryMapRead( absoluteY_new() ) );
 
-#define Y_INDEXED_ABSOLUTE_aY_A_OP( op )\
-    op( absolute( Y ), &A );
+#define Y_INDEXED_ABSOLUTE_A_aY_OP( op )\
+    op( A, spcMemoryMapRead( absoluteY_new() ) );
+
+#define Y_INDEXED_ABSOLUTE_aY_A_WRITEOUT_OP( op )\
+    uint16_t addr = absoluteY_new(); \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ), A ) );
 // Y-INDEXED ABSOLUTE OPS END
 
 // X-INDEXED INDIRECT OPS START
-#define X_INDEXED_INDIRECT_A_dX_OP( op )\
-    op( &A, spc_memory_map( direct_16( X ) ) );
+#define X_INDEXED_INDIRECT_A_dX_WRITEOUT_OP( op )\
+    A = op( A, spcMemoryMapRead( spcMemoryMapReadU16( direct_new( X ) ) ) );
 
-#define X_INDEXED_INDIRECT_dX_A_OP( op )\
-    op( spc_memory_map( direct_16( X ) ), &A );
+#define X_INDEXED_INDIRECT_A_dX_OP( op )\
+    op( A, spcMemoryMapRead( spcMemoryMapReadU16( direct_new( X ) ) ) );
+
+#define X_INDEXED_INDIRECT_dX_A_WRITEOUT_OP( op )\
+    uint16_t addr = spcMemoryMapReadU16( direct_new( X ) ); \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ), A ) );
 // X-INDEXED INDIRECT OPS END
 
 // INDIRECT Y-INDEXED OPS START
-#define INDIRECT_Y_INDEXED_A_dY_OP( op )\
-    op( &A, spc_memory_map( direct_16( 0 ) + Y ) );
+#define INDIRECT_Y_INDEXED_A_dY_WRITEOUT_OP( op )\
+    A = op( A, spcMemoryMapRead( spcMemoryMapReadU16( direct_new( 0 ) ) + Y ) );
 
-#define INDIRECT_Y_INDEXED_dY_A_OP( op )\
-    op( spc_memory_map( direct_16( 0 ) + Y ), &A );
+#define INDIRECT_Y_INDEXED_A_dY_OP( op )\
+    op( A, spcMemoryMapRead( spcMemoryMapReadU16( direct_new( 0 ) ) + Y ) );
+
+#define INDIRECT_Y_INDEXED_dY_A_WRITEOUT_OP( op )\
+    uint16_t addr = spcMemoryMapReadU16( direct_new( 0 ) ) + Y; \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ), A ) );
 // INDIRECT Y-INDEXED OPS END
 
 // RELATIVE OPS START
-#define RELATIVE_OP( op ) \
-    op( curr_program_counter + immediate_8() ); // TODO - verify this
 
 // Ordering here is the exception to the little-endian operands rule.
 // BBS $01.2, $05 is stored as <BBS.2> 01 02
-#define RELATIVE_OP_D_R( op ) \
-    uint8_t *d = direct( 0 ); \
-    uint8_t *r = immediate(); \
-    op( d, r );
+#define RELATIVE_D_R_WRITEOUT_OP( op ) \
+    uint16_t addr = direct_new( 0 ); \
+    uint8_t r = immediate_new(); \
+    spcMemoryMapWrite( addr, op( spcMemoryMapRead( addr ), r ) );
 
-#define RELATIVE_OP_Y_R( op ) \
-    op( &Y, immediate() );
+#define RELATIVE_OP_D_R( op ) \
+    uint16_t addr = direct_new( 0 ); \
+    uint8_t r = immediate_new(); \
+    op( spcMemoryMapRead( addr ), r );
+
+#define RELATIVE_Y_R_WRITEOUT_OP( op ) \
+    Y = op( Y, immediate_new() );
 // RELATIVE OPS END
 
 // IMMEDIATE OPS START
+#define IMMEDIATE_A_I_WRITEOUT_OP( op ) \
+    A = op( A, immediate_new() );
+
 #define IMMEDIATE_A_I_OP( op ) \
-    op( &A, immediate() );
+    op( A, immediate_new() );
+
+#define IMMEDIATE_X_I_WRITEOUT_OP( op ) \
+    X = op( X, immediate_new() );
 
 #define IMMEDIATE_X_I_OP( op ) \
-    op( &X, immediate() );
+    op( X, immediate_new() );
+
+#define IMMEDIATE_Y_I_WRITEOUT_OP( op ) \
+    Y = op( Y, immediate_new() );
 
 #define IMMEDIATE_Y_I_OP( op ) \
-    op( &Y, immediate() );
+    op( Y, immediate_new() );
 // IMMEDIATE OPS END
 
-// ACCUMULATOR OPS START
-#define ACCUMULATOR_OP( op ) \
-    op( &A );
-// ACCUMULATOR OPS END
-
 // IMPLIED OPS START
+#define IMPLIED_REG_REG_WRITEOUT_OP( op, reg1, reg2 ) \
+    reg1 = op( reg1, reg2 );
+
+#define IMPLIED_A_WRITEOUT_OP( op ) \
+    A = op( A )
+
 #define IMPLIED_A_OP( op ) \
-    ACCUMULATOR_OP( op )
+    op( A )
+
+#define IMPLIED_X_WRITEOUT_OP( op ) \
+    X = op( X );
 
 #define IMPLIED_X_OP( op ) \
-    op( &X );
+    op( X );
+
+#define IMPLIED_Y_WRITEOUT_OP( op ) \
+    Y = op( Y );
 
 #define IMPLIED_Y_OP( op ) \
-    op( &Y );
+    op( Y );
+
+#define IMPLIED_PSW_WRITEOUT_OP( op ) \
+    PSW = op( PSW );
 
 #define IMPLIED_PSW_OP( op ) \
-    op( &PSW );
+    op( PSW );
 
-#define IMPLIED_X_A_OP( op ) \
-    op( &X, &A );
+#define IMPLIED_X_A_WRITEOUT_OP( op ) \
+    X = op( X, A );
 
-#define IMPLIED_A_X_OP( op ) \
-    op( &A, &X );
+#define IMPLIED_A_X_WRITEOUT_OP( op ) \
+    A = op( A, X );
 
-#define IMPLIED_Y_A_OP( op ) \
-    op( &Y, &A );
+#define IMPLIED_Y_A_WRITEOUT_OP( op ) \
+    Y = op( Y, A );
 
-#define IMPLIED_A_Y_OP( op ) \
-    op( &A, &Y );
+#define IMPLIED_A_Y_WRITEOUT_OP( op ) \
+    A = op( A, Y );
 
-#define IMPLIED_SP_X_OP( op ) \
-    op( &SP, &X );
+#define IMPLIED_SP_X_WRITEOUT_OP( op ) \
+    SP = op( SP, X );
 
-#define IMPLIED_X_SP_OP( op ) \
-    op( &X, &SP );
+#define IMPLIED_X_SP_WRITEOUT_OP( op ) \
+    X = op( X, SP );
 
 #define IMPLIED_YA_OP( op ) \
-    uint16_t YA; \
-    op( &YA ); \
-    storeYA( YA );
+    storeYA( op( getYA() ) ); \
 
 #define IMPLIED_YA_X_OP( op ) \
-    uint16_t YA; \
-    op( &YA, &X ); \
-    storeYA( YA );
+    storeYA( op( getYA(), X ); );
 // IMPLIED OPS END
 
 
 #pragma endregion
 
-void spc_set_PSW_register( uint8_t val, uint8_t flags ) {
-    if ( val == 0 )
-        PSW |= SPC_ZERO_FLAG & flags;
-    else
-        PSW &= ~( SPC_ZERO_FLAG & flags );
-
-    if ( val & 0x80 )
-        PSW |= SPC_NEGATIVE_FLAG & flags;
-    else
-        PSW &= ~( SPC_NEGATIVE_FLAG & flags );
-}
-
 #pragma region SPC_INSTRUCTIONS
 
 
 #pragma region SPC_STACK
-static void POP( uint8_t *O1 ) {
-    *O1 = *accessPageAddr( ++SP );
+static inline uint8_t POP( uint8_t O1 ) {
+    // TODO - remove O1
+    UNUSED2( O1 );
+    return spcMemoryMapRead( ++SP );
 }
 
-static void PUSH( uint8_t *O1 ) {
-    *accessPageAddr( SP-- ) = *O1;
+static inline void PUSH( uint8_t O1 ) {
+    spcMemoryMapWrite( SP--, O1 );
 }
 
 static void fsAE_POP() {
-    IMPLIED_A_OP( POP );
+    IMPLIED_A_WRITEOUT_OP( POP );
 }
 static void fs8E_POP() {
-    IMPLIED_PSW_OP( POP );
+    IMPLIED_PSW_WRITEOUT_OP( POP );
 }
 static void fsCE_POP() {
-    IMPLIED_X_OP( POP );
+    IMPLIED_X_WRITEOUT_OP( POP );
 }
 static void fsEE_POP() {
-    IMPLIED_Y_OP( POP );
+    IMPLIED_Y_WRITEOUT_OP( POP );
 }
 static void fs2D_PUSH() {
     IMPLIED_A_OP( PUSH );
@@ -580,15 +799,15 @@ static void fs6D_PUSH() {
 
 #pragma region SPC_ADD_SBC
 
-static void ADC( uint8_t *O1, uint8_t *O2 ) {
+static uint8_t ADC( uint8_t O1, uint8_t O2 ) {
     uint8_t C = ( PSW & SPC_CARRY_FLAG ) ? 0x01 : 0x00;
 
-    uint16_t result = ( (uint16_t)*O1 ) + ( (uint16_t)*O2 ) + ( (uint16_t)C );
+    uint16_t result = ( (uint16_t)O1 ) + ( (uint16_t)O2 ) + ( (uint16_t)C );
     uint8_t result8 = (uint8_t)( result & 0x00FF );
-    if ( (~( *O1 ^ *O2 ) & ( *O1 ^ result8 ) ) & 0x80 ) {
+    if ( (~( O1 ^ O2 ) & ( O1 ^ result8 ) ) & 0x80 ) {
         PSW |= SPC_OVERFLOW_FLAG;
     }
-    if ( ( ( *O1 & 0x0F ) + ( *O2 & 0x0F ) + C ) > 0x0F ) {
+    if ( ( ( O1 & 0x0F ) + ( O2 & 0x0F ) + C ) > 0x0F ) {
         PSW |= SPC_HALF_CARRY_FLAG;
     }
     if ( result8 == 0 ){
@@ -600,54 +819,54 @@ static void ADC( uint8_t *O1, uint8_t *O2 ) {
     if ( result > 0xFF ){
         PSW |= SPC_CARRY_FLAG;
     }
-    *O1 = result8;
+    return result8;
 }
 
-static void SBC( uint8_t *O1, uint8_t *O2 ) {
-    uint8_t Bneg = ( ~( *O2 + ( PSW & SPC_CARRY_FLAG ? 0 : 1 ) ) ) + 1;
-    ADC( O1, &Bneg );
+static uint8_t SBC( uint8_t O1, uint8_t O2 ) {
+    uint8_t Bneg = ( ~( O2 + ( PSW & SPC_CARRY_FLAG ? 0 : 1 ) ) ) + 1;
+    return ADC( O1, Bneg );
 }
 
 static void fs99_ADC() {
-    INDIRECT_PAGE_INDIRECT_PAGE_OP( ADC );
+    INDIRECT_PAGE_INDIRECT_PAGE_WRITEOUT_OP( ADC );
 }
 static void fs88_ADC() {
-    IMMEDIATE_A_I_OP( ADC );
+    IMMEDIATE_A_I_WRITEOUT_OP( ADC );
 }
 static void fs86_ADC() {
-    INDIRECT_X_A_OP( ADC );
+    INDIRECT_X_A_WRITEOUT_OP( ADC );
 }
 static void fs97_ADC() {
-    INDIRECT_Y_INDEXED_A_dY_OP( ADC );
+    INDIRECT_Y_INDEXED_A_dY_WRITEOUT_OP( ADC );
 }
 static void fs87_ADC() {
-    X_INDEXED_INDIRECT_A_dX_OP( ADC );
+    X_INDEXED_INDIRECT_A_dX_WRITEOUT_OP( ADC );
 }
 static void fs84_ADC() {
-    DIRECT_A_D_OP( ADC );
+    DIRECT_A_D_WRITEOUT_OP( ADC );
 }
 static void fs94_ADC() {
-    X_INDEXED_DIRECT_PAGE_A_DX_OP( ADC );
+    X_INDEXED_DIRECT_PAGE_A_DX_WRITEOUT_OP( ADC );
 }
 static void fs85_ADC() {
-    ABSOLUTE_A_a_OP( ADC );
+    ABSOLUTE_A_a_WRITEOUT_OP( ADC );
 }
 static void fs95_ADC() {
-    X_INDEXED_ABSOLUTE_A_aX_OP( ADC );
+    X_INDEXED_ABSOLUTE_A_aX_WRITEOUT_OP( ADC );
 }
 static void fs96_ADC() {
-    Y_INDEXED_ABSOLUTE_A_aY_OP( ADC );
+    Y_INDEXED_ABSOLUTE_A_aY_WRITEOUT_OP( ADC );
 }
 static void fs89_ADC() {
-    DIRECT_PAGE_DIRECT_PAGE_OP( ADC );
+    DIRECT_PAGE_DIRECT_PAGE_WRITEOUT_OP( ADC );
 }
 static void fs98_ADC() {
-    IMMEDIATE_TO_DIRECT_PAGE_OP( ADC );
+    IMMEDIATE_TO_DIRECT_PAGE_WRITEOUT_OP( ADC );
 }
 static void fs7A_ADDW() {
     // TODO
     uint16_t YA = getYA();
-    uint16_t O1 = direct_16( 0 );
+    uint16_t O1 = spcMemoryMapRead( direct_new( 0 ) );
     uint32_t result = (uint32_t)YA + (uint32_t)O1;
     PSW &= ~( SPC_NEGATIVE_FLAG | SPC_OVERFLOW_FLAG | SPC_HALF_CARRY_FLAG | SPC_ZERO_FLAG | SPC_CARRY_FLAG );
     PSW = PSW
@@ -660,45 +879,45 @@ static void fs7A_ADDW() {
 }
 
 static void fsB9_SBC() {
-    INDIRECT_PAGE_INDIRECT_PAGE_OP( SBC );
+    INDIRECT_PAGE_INDIRECT_PAGE_WRITEOUT_OP( SBC );
 }
 static void fsA8_SBC() {
-    IMMEDIATE_A_I_OP( SBC );
+    IMMEDIATE_A_I_WRITEOUT_OP( SBC );
 }
 static void fsA6_SBC() {
-    INDIRECT_A_X_OP( SBC );
+    INDIRECT_A_X_WRITEOUT_OP( SBC );
 }
 static void fsB7_SBC() {
-    INDIRECT_Y_INDEXED_A_dY_OP( SBC );
+    INDIRECT_Y_INDEXED_A_dY_WRITEOUT_OP( SBC );
 }
 static void fsA7_SBC() {
-    X_INDEXED_INDIRECT_A_dX_OP( SBC );
+    X_INDEXED_INDIRECT_A_dX_WRITEOUT_OP( SBC );
 }
 static void fsA4_SBC() {
-    DIRECT_A_D_OP( SBC );
+    DIRECT_A_D_WRITEOUT_OP( SBC );
 }
 static void fsB4_SBC() {
-    X_INDEXED_DIRECT_PAGE_A_DX_OP( SBC );
+    X_INDEXED_DIRECT_PAGE_A_DX_WRITEOUT_OP( SBC );
 }
 static void fsA5_SBC() {
-    ABSOLUTE_A_a_OP( SBC );
+    ABSOLUTE_A_a_WRITEOUT_OP( SBC );
 }
 static void fsB5_SBC() {
-    X_INDEXED_ABSOLUTE_A_aX_OP( SBC );
+    X_INDEXED_ABSOLUTE_A_aX_WRITEOUT_OP( SBC );
 }
 static void fsB6_SBC() {
-    Y_INDEXED_ABSOLUTE_A_aY_OP( SBC );
+    Y_INDEXED_ABSOLUTE_A_aY_WRITEOUT_OP( SBC );
 }
 static void fsA9_SBC() {
-    DIRECT_PAGE_DIRECT_PAGE_OP( SBC );
+    DIRECT_PAGE_DIRECT_PAGE_WRITEOUT_OP( SBC );
 }
 static void fsB8_SBC() {
-    IMMEDIATE_TO_DIRECT_PAGE_OP( SBC );
+    IMMEDIATE_TO_DIRECT_PAGE_WRITEOUT_OP( SBC );
 }
 static void fs9A_SUBW() {
     // TODO
     uint32_t YA = (uint32_t) getYA();
-    uint32_t O1 = (uint32_t) readU16( direct( 0 ) );
+    uint32_t O1 = (uint32_t) spcMemoryMapReadU16( direct_new( 0 ) );
 
     uint32_t result = YA - O1;
     bool overflow = ( ( YA ^ O1 ) & ( YA ^ result ) ) & 0x8000;
@@ -723,53 +942,56 @@ static void fs9A_SUBW() {
 #pragma endregion 
 
 #pragma region SPC_AND
-static void AND( uint8_t *O1, uint8_t *O2 ) {
-    *O1 = *O1 & *O2;
+static inline uint8_t AND( uint8_t O1, uint8_t O2 ) {
+    O1 = O1 & O2;
 
     PSW = ( PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) )
-        | ( ( *O1 == 0 ) ? SPC_ZERO_FLAG : 0x00 ) 
-        | ( ( *O1 & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 );
+        | ( ( O1 == 0 ) ? SPC_ZERO_FLAG : 0x00 ) 
+        | ( ( O1 & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 );
+
+    return O1;
 }
 
-static bool AND1( bool O1, bool O2 ) {
-    return O1 && O2;
+static uint8_t AND1( bool O1, uint8_t O2, uint8_t O2Mask ) {
+    bool O2S = O2 & O2Mask;
+    return ( O1 && O2Mask ) ? O2Mask : 0x00;
 }
 
 static void fs39_AND() {
-    INDIRECT_PAGE_INDIRECT_PAGE_OP( AND );
+    INDIRECT_PAGE_INDIRECT_PAGE_WRITEOUT_OP( AND );
 }
 static void fs28_AND() {
-    IMMEDIATE_A_I_OP( AND );
+    IMMEDIATE_A_I_WRITEOUT_OP( AND );
 }
 static void fs26_AND() {
-    INDIRECT_A_X_OP( AND );
+    INDIRECT_A_X_WRITEOUT_OP( AND );
 }
 static void fs37_AND() {
-    INDIRECT_Y_INDEXED_A_dY_OP( AND );
+    INDIRECT_Y_INDEXED_A_dY_WRITEOUT_OP( AND );
 }
 static void fs27_AND() {
-    X_INDEXED_INDIRECT_A_dX_OP( AND );
+    X_INDEXED_INDIRECT_A_dX_WRITEOUT_OP( AND );
 }
 static void fs24_AND() {
-    DIRECT_A_D_OP( AND );
+    DIRECT_A_D_WRITEOUT_OP( AND );
 }
 static void fs34_AND() {
-    X_INDEXED_DIRECT_PAGE_A_DX_OP( AND );
+    X_INDEXED_DIRECT_PAGE_A_DX_WRITEOUT_OP( AND );
 }
 static void fs25_AND() {
-    ABSOLUTE_A_a_OP( AND );
+    ABSOLUTE_A_a_WRITEOUT_OP( AND );
 }
 static void fs35_AND() {
-    X_INDEXED_ABSOLUTE_A_aX_OP( AND );
+    X_INDEXED_ABSOLUTE_A_aX_WRITEOUT_OP( AND );
 }
 static void fs36_AND() {
-    Y_INDEXED_ABSOLUTE_A_aY_OP( AND );
+    Y_INDEXED_ABSOLUTE_A_aY_WRITEOUT_OP( AND );
 }
 static void fs29_AND() {
-    DIRECT_PAGE_DIRECT_PAGE_OP( AND );
+    DIRECT_PAGE_DIRECT_PAGE_WRITEOUT_OP( AND );
 }
 static void fs38_AND() {
-    IMMEDIATE_TO_DIRECT_PAGE_OP( AND );
+    IMMEDIATE_TO_DIRECT_PAGE_WRITEOUT_OP( AND );
 }
 static void fs6A_AND1() {
     ABSOLUTE_BOOLEAN_BIT_C_iMB_OP( AND1 );
@@ -781,84 +1003,85 @@ static void fs4A_AND1() {
 #pragma endregion 
 
 #pragma region SPC_BIT_SHIFT
-static void LSR( uint8_t *O1 ) {
-    PSW = ( PSW & ~SPC_CARRY_FLAG ) | ( ( *O1 & 0x01 ) ? SPC_CARRY_FLAG : 0x00 );
-    *O1 = ( *O1 >> 1 ) & ~0x7F;
+static inline uint8_t LSR( uint8_t O1 ) {
+    PSW = ( PSW & ~SPC_CARRY_FLAG ) | ( ( O1 & 0x01 ) ? SPC_CARRY_FLAG : 0x00 );
+    O1 = ( O1 >> 1 ) & ~0x7F;
 
     PSW = ( PSW & ~( SPC_ZERO_FLAG | SPC_NEGATIVE_FLAG ) )
-        | ( ( *O1 == 0x00 ) ? SPC_ZERO_FLAG : 0x00 );
+        | ( ( O1 == 0x00 ) ? SPC_ZERO_FLAG : 0x00 );
+    return O1;
 }
-static void ASL( uint8_t *O1 ) {
-    PSW = ( PSW & ~SPC_CARRY_FLAG ) | ( ( *O1 & 0x80 ) ? SPC_CARRY_FLAG : 0x00 );
-    *O1 = ( *O1 << 1 ) & 0xFE;
+static inline uint8_t ASL( uint8_t O1 ) {
+    PSW = ( PSW & ~SPC_CARRY_FLAG ) | ( ( O1 & 0x80 ) ? SPC_CARRY_FLAG : 0x00 );
+    O1 = ( O1 << 1 ) & 0xFE;
 
     PSW = ( PSW & ~( SPC_ZERO_FLAG | SPC_NEGATIVE_FLAG ) )
-        | ( ( *O1 == 0x00 ) ? SPC_ZERO_FLAG : 0x00 )
-        | ( ( *O1 & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 );
+        | ( ( O1 == 0x00 ) ? SPC_ZERO_FLAG : 0x00 )
+        | ( ( O1 & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 );
+
+    return O1;
 }
 
 static void fs1C_ASL() {
-    IMPLIED_A_OP( ASL );
+    IMPLIED_A_WRITEOUT_OP( ASL );
 }
 static void fs0B_ASL() {
-    DIRECT_D_OP( ASL );
+    DIRECT_D_WRITEOUT_OP( ASL );
 }
 static void fs1B_ASL() {
-    X_INDEXED_DIRECT_PAGE_DX_OP( ASL );
+    X_INDEXED_DIRECT_PAGE_DX_WRITEOUT_OP( ASL );
 }
 static void fs0C_ASL() {
-    ABSOLUTE_a_OP( ASL );
+    ABSOLUTE_a_WRITEOUT_OP( ASL );
 }
-
 static void fs5C_LSR() {
-    IMPLIED_A_OP( LSR );
+    IMPLIED_A_WRITEOUT_OP( LSR );
 }
 static void fs4B_LSR() {
-    DIRECT_D_OP( LSR );
+    DIRECT_D_WRITEOUT_OP( LSR );
 }
 static void fs5B_LSR() {
-    X_INDEXED_DIRECT_PAGE_DX_OP( LSR );
+    X_INDEXED_DIRECT_PAGE_DX_WRITEOUT_OP( LSR );
 }
 static void fs4C_LSR() {
-    ABSOLUTE_a_OP( LSR );
+    ABSOLUTE_a_WRITEOUT_OP( LSR );
 }
 
-static void ROL( uint8_t *O1 ) {
+static uint8_t ROL( uint8_t O1 ) {
     uint8_t lsb = PSW & SPC_CARRY_FLAG ? 0x01 : 0x00;
-    PSW = ( PSW & ~SPC_CARRY_FLAG ) | ( ( *O1 & 0x80 ) ? SPC_CARRY_FLAG : 0x00 );
-    *O1 = ( ( *O1 << 1 ) & 0xFE ) | lsb;
+    PSW = ( PSW & ~SPC_CARRY_FLAG ) | ( ( O1 & 0x80 ) ? SPC_CARRY_FLAG : 0x00 );
+    return ( ( O1 << 1 ) & 0xFE ) | lsb;
 }
 
-static void ROR( uint8_t *O1 ) {
+static uint8_t ROR( uint8_t O1 ) {
     uint8_t msb = PSW & SPC_CARRY_FLAG ? 0x80 : 0x00;
-    PSW = ( PSW & ~SPC_CARRY_FLAG ) | ( ( *O1 & 0x01 ) ? SPC_CARRY_FLAG : 0x00 );
-    *O1 = ( ( *O1 >> 1 ) & 0x7F ) | msb;
+    PSW = ( PSW & ~SPC_CARRY_FLAG ) | ( ( O1 & 0x01 ) ? SPC_CARRY_FLAG : 0x00 );
+    return ( ( O1 >> 1 ) & 0x7F ) | msb;
 }
 
 static void fs3C_ROL() {
-    IMPLIED_A_OP( ROL );
+    IMPLIED_A_WRITEOUT_OP( ROL );
 }
 static void fs2B_ROL() {
-    DIRECT_D_OP( ROL );
+    DIRECT_D_WRITEOUT_OP( ROL );
 }
 static void fs3B_ROL() {
-    X_INDEXED_DIRECT_PAGE_DX_OP( ROL );
+    X_INDEXED_DIRECT_PAGE_DX_WRITEOUT_OP( ROL );
 }
 static void fs2C_ROL() {
-    ABSOLUTE_a_OP( ROL );
+    ABSOLUTE_a_WRITEOUT_OP( ROL );
 }
-
 static void fs7C_ROR() {
-    IMPLIED_A_OP( ROR );
+    IMPLIED_A_WRITEOUT_OP( ROR );
 }
 static void fs6B_ROR() {
-    DIRECT_D_OP( ROR );
+    DIRECT_D_WRITEOUT_OP( ROR );
 }
 static void fs7B_ROR() {
-    X_INDEXED_DIRECT_PAGE_DX_OP( ROR );
+    X_INDEXED_DIRECT_PAGE_DX_WRITEOUT_OP( ROR );
 }
 static void fs6C_ROR() {
-    ABSOLUTE_a_OP( ROR );
+    ABSOLUTE_a_WRITEOUT_OP( ROR );
 }
 
 #pragma endregion
@@ -873,19 +1096,15 @@ static void BranchOnCondition( bool condition, int8_t offset ) {
 }
 
 static void BranchImmediateOnCondition( bool condition ) {
-    BranchOnCondition( condition, (int8_t) immediate_8() );
+    BranchOnCondition( condition, (int8_t) immediate_new() );
 }
 
-static void BBC( bool O1, uint8_t* r ) {
-    BranchOnCondition( O1, (int8_t) *r );
+static void BBC( bool O1, uint8_t r ) {
+    BranchOnCondition( !O1, (int8_t) r );
 }
 
-static void BBS( bool O1, uint8_t* r ) {
-    BranchOnCondition( O1, (int8_t) *r );
-}
-
-static void JMP( uint16_t addr ) {
-    next_program_counter = addr;
+static void BBS( bool O1, uint8_t r ) {
+    BranchOnCondition( O1, (int8_t) r );
 }
 
 static void fs13_BBC() {
@@ -966,24 +1185,28 @@ static void fs2F_BRA() {
     BranchImmediateOnCondition( true );
     opCycles -= 2;
 }
+
+static void JMP( uint16_t addr ) {
+    next_program_counter = addr;
+}
+
 static void fs0F_BRK() {
     // TODO
     PSW |= SPC_BREAK_FLAG;
     uint8_t r = ( next_program_counter >> 8 ) & 0x00FF;
-    PUSH( &r );
+    PUSH( r );
     r = next_program_counter & 0x00FF;
-    PUSH( &r );
-    PUSH( &PSW );
+    PUSH( r );
+    PUSH( PSW );
 
     PSW &= ~SPC_INTERRUPT_FLAG;
     JMP( 0xFFDE );
 }
 
 static void fs1F_JMP() {
-    // TODO - verify that its 'pc = im_16 + X', not 'pc = mem[ im_16 + X ]'
     ABSOLUTE_X_INDEXED_INDIRECT_ADDR_OP( JMP );
-    
 }
+
 static void fs5F_JMP() {
     ABSOLUTE_a_addr_OP( JMP );
 }
@@ -991,60 +1214,59 @@ static void fs5F_JMP() {
 #pragma endregion 
 
 #pragma region SPC_CLR
-static void CLR( uint8_t* O1, uint8_t mask ) {
-    *O1 &= ~mask;
+static uint8_t CLR( uint8_t O1, uint8_t mask ) {
+    return O1 & ~mask;
 }
 static void fs12_CLR1() {
-    DIRECT_PAGE_BIT_OP( CLR, 0 );
+    DIRECT_PAGE_BIT_WRITEOUT_OP( CLR, 0 );
 }
 static void fs32_CLR1() {
-    DIRECT_PAGE_BIT_OP( CLR, 1 );
+    DIRECT_PAGE_BIT_WRITEOUT_OP( CLR, 1 );
 }
 static void fs52_CLR1() {
-    DIRECT_PAGE_BIT_OP( CLR, 2 );
+    DIRECT_PAGE_BIT_WRITEOUT_OP( CLR, 2 );
 }
 static void fs72_CLR1() {
-    DIRECT_PAGE_BIT_OP( CLR, 3 );
+    DIRECT_PAGE_BIT_WRITEOUT_OP( CLR, 3 );
 }
 static void fs92_CLR1() {
-    DIRECT_PAGE_BIT_OP( CLR, 4 );
+    DIRECT_PAGE_BIT_WRITEOUT_OP( CLR, 4 );
 }
 static void fsB2_CLR1() {
-    DIRECT_PAGE_BIT_OP( CLR, 5 );
+    DIRECT_PAGE_BIT_WRITEOUT_OP( CLR, 5 );
 }
 static void fsD2_CLR1() {
-    DIRECT_PAGE_BIT_OP( CLR, 6 );
+    DIRECT_PAGE_BIT_WRITEOUT_OP( CLR, 6 );
 }
 static void fsF2_CLR1() {
-    DIRECT_PAGE_BIT_OP( CLR, 7 );
+    DIRECT_PAGE_BIT_WRITEOUT_OP( CLR, 7 );
 }
-
 static void fs60_CLRC() {
-    CLR( &PSW, SPC_CARRY_FLAG );
+    PSW &= ~SPC_CARRY_FLAG;
 }
 static void fs20_CLRP() {
-    CLR( &PSW, SPC_P_FLAG );
+    PSW &= ~SPC_P_FLAG;
 }
 static void fsE0_CLRV() {
-    CLR( &PSW, SPC_BREAK_FLAG );
+    PSW &= ~SPC_BREAK_FLAG;
 }
 #pragma endregion 
 
 #pragma region SPC_CMP
-static void CMP( uint8_t *O1, uint8_t *O2 ) {
+static void CMP( uint8_t O1, uint8_t O2 ) {
     // TODO - verify
-    int8_t sO1 = (int8_t)*O1;
-    int8_t sO2 = (int8_t)*O2;
+    int8_t sO1 = (int8_t)O1;
+    int8_t sO2 = (int8_t)O2;
     int8_t result = sO1 - sO2;
     PSW = ( PSW & ~( SPC_ZERO_FLAG | SPC_CARRY_FLAG | SPC_NEGATIVE_FLAG ) )
         | ( ( result == 0 ) ? SPC_ZERO_FLAG
         : ( ( ( sO1 >= sO2 ) ? SPC_CARRY_FLAG : 0x00 )
         | ( ( result & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 ) ) );
 }
-static void CMPW( uint16_t *O1, uint8_t *O2 ) {
+static void CMPW( uint16_t O1, uint8_t O2 ) {
     // TODO - verify
-    int16_t sO1 = (int16_t)*O1;
-    int16_t sO2 = (int16_t)*O2;
+    int16_t sO1 = (int16_t)O1;
+    int16_t sO2 = (int16_t)O2;
     int16_t result = sO1 - sO2;
     PSW = ( PSW & ~( SPC_ZERO_FLAG | SPC_NEGATIVE_FLAG ) )
         | ( ( result == 0 ) ? SPC_ZERO_FLAG
@@ -1111,164 +1333,170 @@ static void fs5A_CMPW() {
 #pragma endregion
 
 #pragma region SPC_DEC_INC
-static void DEC( uint8_t *O1 ) {
-    --*O1;
+static inline uint8_t DEC( uint8_t O1 ) {
+    --O1;
     PSW = ( PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) )
-        | ( ( *O1 & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 )
-        | ( ( *O1 == 0 ) ? SPC_ZERO_FLAG : 0x00 );
+        | ( ( O1 & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 )
+        | ( ( O1 == 0 ) ? SPC_ZERO_FLAG : 0x00 );
+    return O1;
 }
-static void INC( uint8_t *O1 ) {
-    ++*O1;
+static inline uint8_t INC( uint8_t O1 ) {
+    ++O1;
     PSW = ( PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) )
-        | ( ( *O1 & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 )
-        | ( ( *O1 == 0 ) ? SPC_ZERO_FLAG : 0x00 );
+        | ( ( O1 & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 )
+        | ( ( O1 == 0 ) ? SPC_ZERO_FLAG : 0x00 );
+    return O1;
 }
 static void fs9C_DEC() {
-    IMPLIED_A_OP( DEC );
+    IMPLIED_A_WRITEOUT_OP( DEC );
 }
 static void fs1D_DEC() {
-    IMPLIED_X_OP( DEC );
+    IMPLIED_X_WRITEOUT_OP( DEC );
 }
 static void fsDC_DEC() {
-    IMPLIED_Y_OP( DEC );
+    IMPLIED_Y_WRITEOUT_OP( DEC );
 }
 static void fs8B_DEC() {
-    DIRECT_D_OP( DEC );
+    DIRECT_D_WRITEOUT_OP( DEC );
 }
 static void fs9B_DEC() {
-    X_INDEXED_DIRECT_PAGE_DX_OP( DEC );
+    X_INDEXED_DIRECT_PAGE_DX_WRITEOUT_OP( DEC );
 }
 static void fs8C_DEC() {
-    ABSOLUTE_a_OP( DEC );
+    ABSOLUTE_a_WRITEOUT_OP( DEC );
 }
 static void fs1A_DECW() {
-    uint8_t *O1 = direct( 0 );
-    uint16_t val = readU16( O1 ) - 1;
+    uint16_t addr = direct_new( 0 );
+    uint16_t O1 = spcMemoryMapReadU16( addr );
     PSW = ( PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) )
-        | ( ( val & 0x8000 ) ? SPC_NEGATIVE_FLAG : 0x00 )
-        | ( ( val == 0 ) ? SPC_ZERO_FLAG : 0x00 );
+        | ( ( O1 & 0x8000 ) ? SPC_NEGATIVE_FLAG : 0x00 )
+        | ( ( O1 == 0 ) ? SPC_ZERO_FLAG : 0x00 );
     
-    storeU16( O1, val );
+    spcMemoryMapWriteU16( addr, O1 );
 }
 static void fsBC_INC() {
-    IMPLIED_A_OP( INC );
+    IMPLIED_A_WRITEOUT_OP( INC );
 }
 static void fs3D_INC() {
-    IMPLIED_X_OP( INC );
+    IMPLIED_X_WRITEOUT_OP( INC );
 }
 static void fsFC_INC() {
-    IMPLIED_Y_OP( INC );
+    IMPLIED_Y_WRITEOUT_OP( INC );
 }
 static void fsAB_INC() {
-    DIRECT_D_OP( INC );
+    DIRECT_D_WRITEOUT_OP( INC );
 }
 static void fsBB_INC() {
-    X_INDEXED_DIRECT_PAGE_DX_OP( INC );
+    X_INDEXED_DIRECT_PAGE_DX_WRITEOUT_OP( INC );
 }
 static void fsAC_INC() {
-    ABSOLUTE_a_OP( INC );
+    ABSOLUTE_a_WRITEOUT_OP( INC );
 }
 static void fs3A_INCW() {
-    uint8_t *O1 = direct( 0 );
-    uint16_t val = readU16( O1 );
-    ++val;
+    uint16_t addr = direct_new( 0 );
+    uint16_t O1 = spcMemoryMapReadU16( addr );
+    ++O1;
     PSW = ( PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) )
-        | ( ( val & 0x8000 ) ? SPC_NEGATIVE_FLAG : 0x00 )
-        | ( ( val == 0 ) ? SPC_ZERO_FLAG : 0x00 );
+        | ( ( O1 & 0x8000 ) ? SPC_NEGATIVE_FLAG : 0x00 )
+        | ( ( O1 == 0 ) ? SPC_ZERO_FLAG : 0x00 );
     
-    storeU16( O1, val );
+    spcMemoryMapWriteU16( addr, O1 );
 }
 #pragma endregion 
 
 #pragma region SPC_EOR_OR
-static void EOR( uint8_t *O1, uint8_t *O2 ) {
-    *O1 = *O1 ^ *O2;
-}
-static bool EOR1( bool O1, bool O2 ) {
+static inline uint8_t EOR( uint8_t O1, uint8_t O2 ) {
+    // TODO - flags?
     return O1 ^ O2;
 }
+static inline uint8_t EOR1( bool O1, uint8_t O2, uint8_t mask ) {
+    bool O2S = O2 & mask;
+    return ( O1 ^ O2S ) ? mask : 0x00;
+}
+static inline uint8_t OR( uint8_t O1, uint8_t O2 ) {
+    // TODO - flags?
+    return O1 | O2;
+}
+static inline uint8_t OR1( bool O1, uint8_t O2, uint8_t mask ) {
+    bool O2S = O2 & mask;
+    return ( O1 || O2S ) ? mask : 0x00;
+}
 
-static void OR( uint8_t *O1, uint8_t *O2 ) {
-    *O1 = *O1 | *O2;
-}
-static bool OR1( bool O1, bool O2 ) {
-    return O1 || O2;
-}
 static void fs59_EOR() {
-    INDIRECT_PAGE_INDIRECT_PAGE_OP( EOR );
+    INDIRECT_PAGE_INDIRECT_PAGE_WRITEOUT_OP( EOR );
 }
 static void fs48_EOR() {
-    IMMEDIATE_A_I_OP( EOR );
+    IMMEDIATE_A_I_WRITEOUT_OP( EOR );
 }
 static void fs46_EOR() {
-    INDIRECT_A_X_OP( EOR );
+    INDIRECT_A_X_WRITEOUT_OP( EOR );
 }
 static void fs57_EOR() {
-   INDIRECT_Y_INDEXED_A_dY_OP( EOR );
+   INDIRECT_Y_INDEXED_A_dY_WRITEOUT_OP( EOR );
 }
 static void fs47_EOR() {
-    X_INDEXED_INDIRECT_A_dX_OP( EOR );
+    X_INDEXED_INDIRECT_A_dX_WRITEOUT_OP( EOR );
 }
 static void fs44_EOR() {
-    DIRECT_A_D_OP( EOR );
+    DIRECT_A_D_WRITEOUT_OP( EOR );
 }
 static void fs54_EOR() {
-    X_INDEXED_DIRECT_PAGE_A_DX_OP( EOR );
+    X_INDEXED_DIRECT_PAGE_A_DX_WRITEOUT_OP( EOR );
 }
 static void fs45_EOR() {
-    ABSOLUTE_A_a_OP( EOR );
+    ABSOLUTE_A_a_WRITEOUT_OP( EOR );
 }
 static void fs55_EOR() {
-    X_INDEXED_ABSOLUTE_A_aX_OP( EOR );
+    X_INDEXED_ABSOLUTE_A_aX_WRITEOUT_OP( EOR );
 }
 static void fs56_EOR() {
-    Y_INDEXED_ABSOLUTE_A_aY_OP( EOR );
+    Y_INDEXED_ABSOLUTE_A_aY_WRITEOUT_OP( EOR );
 }
 static void fs49_EOR() {
-    DIRECT_PAGE_DIRECT_PAGE_OP( EOR );
+    DIRECT_PAGE_DIRECT_PAGE_WRITEOUT_OP( EOR );
 }
 static void fs58_EOR() {
-    IMMEDIATE_TO_DIRECT_PAGE_OP( EOR );
+    IMMEDIATE_TO_DIRECT_PAGE_WRITEOUT_OP( EOR );
 }
 static void fs8A_EOR1() {
     ABSOLUTE_BOOLEAN_BIT_C_MB_OP( EOR1 );
 }
 
 static void fs19_OR() {
-    INDIRECT_PAGE_INDIRECT_PAGE_OP( OR );
+    INDIRECT_PAGE_INDIRECT_PAGE_WRITEOUT_OP( OR );
 }
 static void fs08_OR() {
-    IMMEDIATE_A_I_OP( OR );
+    IMMEDIATE_A_I_WRITEOUT_OP( OR );
 }
 static void fs06_OR() {
-    INDIRECT_A_X_OP( OR );
+    INDIRECT_A_X_WRITEOUT_OP( OR );
 }
 static void fs17_OR() {
-   INDIRECT_Y_INDEXED_A_dY_OP( OR );
+   INDIRECT_Y_INDEXED_A_dY_WRITEOUT_OP( OR );
 }
 static void fs07_OR() {
-    X_INDEXED_INDIRECT_A_dX_OP( OR );
+    X_INDEXED_INDIRECT_A_dX_WRITEOUT_OP( OR );
 }
 static void fs04_OR() {
-    DIRECT_A_D_OP( OR );
+    DIRECT_A_D_WRITEOUT_OP( OR );
 }
 static void fs14_OR() {
-    X_INDEXED_DIRECT_PAGE_A_DX_OP( OR );
+    X_INDEXED_DIRECT_PAGE_A_DX_WRITEOUT_OP( OR );
 }
 static void fs05_OR() {
-    ABSOLUTE_A_a_OP( OR );
+    ABSOLUTE_A_a_WRITEOUT_OP( OR );
 }
 static void fs15_OR() {
-    X_INDEXED_ABSOLUTE_A_aX_OP( OR );
+    X_INDEXED_ABSOLUTE_A_aX_WRITEOUT_OP( OR );
 }
 static void fs16_OR() {
-    Y_INDEXED_ABSOLUTE_A_aY_OP( OR );
+    Y_INDEXED_ABSOLUTE_A_aY_WRITEOUT_OP( OR );
 }
 static void fs09_OR() {
-    DIRECT_PAGE_DIRECT_PAGE_OP( OR );
+    DIRECT_PAGE_DIRECT_PAGE_WRITEOUT_OP( OR );
 }
 static void fs18_OR() {
-    IMMEDIATE_TO_DIRECT_PAGE_OP( OR );
+    IMMEDIATE_TO_DIRECT_PAGE_WRITEOUT_OP( OR );
 }
 static void fs2A_OR1() {
     ABSOLUTE_BOOLEAN_BIT_C_iMB_OP( OR1 );
@@ -1279,207 +1507,209 @@ static void fs0A_OR1() {
 #pragma endregion 
 
 #pragma region SPC_MOV
-// TODO - flags on/off
-static void MOV( uint8_t *O1, uint8_t *O2 ) {
-    *O1 = *O2;
-}
-
-static void MOV_FLAG( uint8_t *O1, uint8_t *O2 ) {
-    *O1 = *O2;
-    PSW = ( PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) ) 
-        | ( ( *O1 & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 )
-        | ( ( *O1 == 0 ) ? SPC_ZERO_FLAG : 0x00 );
-}
-
-static bool MOV1( bool O1, bool O2 ) {
-    O1 = O2; // TODO - disable warning on unused O1
+// TODO - Add the extra read-cycle for some of these
+// TODO - these only really need 1 parameter
+static inline uint8_t MOV( uint8_t O1, uint8_t O2 ) {
+    O1 = O2;
     return O1;
 }
 
-static void MOVW_YA_D( uint16_t *O1, uint8_t *O2 ) {
-    // TODO - make sure this is OK
-    *O1 = readU16( O2 );
+static inline uint8_t MOV_FLAG( uint8_t O1, uint8_t O2 ) {
+    O1 = O2;
     PSW = ( PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) ) 
-        | ( ( *O1 & 0x8000 ) ? SPC_NEGATIVE_FLAG : 0x00 )
-        | ( ( *O1 == 0 ) ? SPC_ZERO_FLAG : 0x00 );
+        | ( ( O1 & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 )
+        | ( ( O1 == 0 ) ? SPC_ZERO_FLAG : 0x00 );
+
+    return O1;
+}
+
+static inline uint8_t MOV1( bool O1, uint8_t O2, uint8_t mask ) {
+    O1 = ( O2 & mask ); // TODO - disable warning on unused O1
+    return O1 ? mask : 0x00;
 }
 
 static void fsAF_MOV() {
-    INDIRECT_AUTO_INC_X_A_OP( MOV );
+    INDIRECT_AUTO_INC_X_A_WRITEOUT_OP( MOV );
 }
 static void fsC6_MOV() {
-    INDIRECT_X_A_OP( MOV );
+    INDIRECT_X_A_WRITEOUT_OP( MOV );
 }
 static void fsD7_MOV() {
-    INDIRECT_Y_INDEXED_dY_A_OP( MOV );
+    INDIRECT_Y_INDEXED_dY_A_WRITEOUT_OP( MOV )
 }
 static void fsC7_MOV() {
-    X_INDEXED_INDIRECT_dX_A_OP( MOV );
+    X_INDEXED_INDIRECT_dX_A_WRITEOUT_OP( MOV );
 }
 static void fsE8_MOV() {
-    IMMEDIATE_A_I_OP( MOV_FLAG );
+    IMMEDIATE_A_I_WRITEOUT_OP( MOV_FLAG );
 }
 static void fsE6_MOV() {
-    INDIRECT_A_X_OP( MOV_FLAG );
+    INDIRECT_A_X_WRITEOUT_OP( MOV_FLAG );
 }
 static void fsBF_MOV() {
-    INDIRECT_AUTO_INC_A_X_OP( MOV_FLAG );
+    INDIRECT_AUTO_INC_A_X_WRITEOUT_OP( MOV_FLAG );
 }
 static void fsF7_MOV() {
-   INDIRECT_Y_INDEXED_A_dY_OP( MOV_FLAG );
+   INDIRECT_Y_INDEXED_A_dY_WRITEOUT_OP( MOV_FLAG );
 }
 static void fsE7_MOV() {
-    X_INDEXED_INDIRECT_A_dX_OP( MOV_FLAG );
+    X_INDEXED_INDIRECT_A_dX_WRITEOUT_OP( MOV_FLAG );
 }
 static void fs7D_MOV() {
-    IMPLIED_A_X_OP( MOV_FLAG );
+    IMPLIED_A_X_WRITEOUT_OP( MOV_FLAG );
 }
 static void fsDD_MOV() {
-    IMPLIED_A_Y_OP( MOV_FLAG );
+    IMPLIED_A_Y_WRITEOUT_OP( MOV_FLAG );
 }
 static void fsE4_MOV() {
-    DIRECT_A_D_OP( MOV_FLAG );
+    DIRECT_A_D_WRITEOUT_OP( MOV_FLAG );
 }
 static void fsF4_MOV() {
-    X_INDEXED_DIRECT_PAGE_A_DX_OP( MOV_FLAG );
+    X_INDEXED_DIRECT_PAGE_A_DX_WRITEOUT_OP( MOV_FLAG );
 }
 static void fsE5_MOV() {
-    ABSOLUTE_A_a_OP( MOV_FLAG );
+    ABSOLUTE_A_a_WRITEOUT_OP( MOV_FLAG );
 }
 static void fsF5_MOV() {
-    X_INDEXED_ABSOLUTE_A_aX_OP( MOV_FLAG );
+    X_INDEXED_ABSOLUTE_A_aX_WRITEOUT_OP( MOV_FLAG );
 }
 static void fsF6_MOV() {
-    Y_INDEXED_ABSOLUTE_A_aY_OP( MOV_FLAG );
+    Y_INDEXED_ABSOLUTE_A_aY_WRITEOUT_OP( MOV_FLAG );
 }
 static void fsBD_MOV() {
-    IMPLIED_SP_X_OP( MOV );
+    IMPLIED_SP_X_WRITEOUT_OP( MOV );
 }
 static void fsCD_MOV() {
-    IMMEDIATE_X_I_OP( MOV_FLAG );
+    IMMEDIATE_X_I_WRITEOUT_OP( MOV_FLAG );
 }
 static void fs5D_MOV() {
-    IMPLIED_X_A_OP( MOV_FLAG );
+    IMPLIED_X_A_WRITEOUT_OP( MOV_FLAG );
 }
 static void fs9D_MOV() {
-    IMPLIED_X_SP_OP( MOV_FLAG );
+    IMPLIED_X_SP_WRITEOUT_OP( MOV_FLAG );
 }
 static void fsF8_MOV() {
-    DIRECT_X_D_OP( MOV_FLAG );
+    DIRECT_X_D_WRITEOUT_OP( MOV_FLAG );
 }
 static void fsF9_MOV() {
-    Y_INDEXED_DIRECT_PAGE_X_DY_OP( MOV_FLAG );
+    Y_INDEXED_DIRECT_PAGE_X_DY_WRITEOUT_OP( MOV_FLAG );
 }
 static void fsE9_MOV() {
-    ABSOLUTE_X_a_OP( MOV_FLAG );
+    ABSOLUTE_X_a_WRITEOUT_OP( MOV_FLAG );
 }
 static void fs8D_MOV() {
-    IMMEDIATE_Y_I_OP( MOV_FLAG );
+    IMMEDIATE_Y_I_WRITEOUT_OP( MOV_FLAG );
 }
 static void fsFD_MOV() {
-    IMPLIED_Y_A_OP( MOV_FLAG );
+    IMPLIED_Y_A_WRITEOUT_OP( MOV_FLAG );
 }
 static void fsEB_MOV() {
-    DIRECT_Y_D_OP( MOV_FLAG );
+    DIRECT_Y_D_WRITEOUT_OP( MOV_FLAG );
 }
 static void fsFB_MOV() {
-    X_INDEXED_DIRECT_PAGE_Y_DX_OP( MOV_FLAG );
+    X_INDEXED_DIRECT_PAGE_Y_DX_WRITEOUT_OP( MOV_FLAG );
 }
 static void fsEC_MOV() {
-    ABSOLUTE_Y_a_OP( MOV_FLAG );
+    ABSOLUTE_Y_a_WRITEOUT_OP( MOV_FLAG );
 }
 static void fsFA_MOV() {
-    DIRECT_PAGE_DIRECT_PAGE_OP( MOV );
+    DIRECT_PAGE_DIRECT_PAGE_WRITEOUT_OP( MOV );
 }
 static void fsD4_MOV() {
-    X_INDEXED_DIRECT_PAGE_DX_A_OP( MOV );
+    X_INDEXED_DIRECT_PAGE_DX_A_WRITEOUT_OP( MOV );
 }
 static void fsDB_MOV() {
-    X_INDEXED_DIRECT_PAGE_DX_Y_OP( MOV );
+    X_INDEXED_DIRECT_PAGE_DX_Y_WRITEOUT_OP( MOV );
 }
 static void fsD9_MOV() {
-    Y_INDEXED_DIRECT_PAGE_DY_X_OP( MOV );
+    Y_INDEXED_DIRECT_PAGE_DY_X_WRITEOUT_OP( MOV );
 }
 static void fs8F_MOV() {
-    IMMEDIATE_TO_DIRECT_PAGE_OP( MOV );
+    IMMEDIATE_TO_DIRECT_PAGE_WRITEOUT_OP( MOV );
 }
 static void fsC4_MOV() {
-    DIRECT_D_A_OP( MOV );
+    DIRECT_D_A_WRITEOUT_OP( MOV );
 }
 static void fsD8_MOV() {
-    DIRECT_D_X_OP( MOV );
+    DIRECT_D_X_WRITEOUT_OP( MOV );
 }
 static void fsCB_MOV() {
-    DIRECT_D_Y_OP( MOV );
+    DIRECT_D_Y_WRITEOUT_OP( MOV );
 }
 static void fsD5_MOV() {
-    X_INDEXED_ABSOLUTE_aX_A_OP( MOV );
+    X_INDEXED_ABSOLUTE_aX_A_WRITEOUT_OP( MOV );
 }
 static void fsD6_MOV() {
-    Y_INDEXED_ABSOLUTE_aY_A_OP( MOV );
+    Y_INDEXED_ABSOLUTE_aY_A_WRITEOUT_OP( MOV );
 }
 static void fsC5_MOV() {
-    ABSOLUTE_a_A_OP( MOV );
+    ABSOLUTE_a_A_WRITEOUT_OP( MOV );
 }
 static void fsC9_MOV() {
-    ABSOLUTE_a_X_OP( MOV );
+    ABSOLUTE_a_X_WRITEOUT_OP( MOV );
 }
 static void fsCC_MOV() {
-    ABSOLUTE_a_Y_OP( MOV );
+    ABSOLUTE_a_Y_WRITEOUT_OP( MOV );
 }
 static void fsAA_MOV1() {
     ABSOLUTE_BOOLEAN_BIT_C_MB_OP( MOV1 );
 }
 static void fsCA_MOV1() {
-    ABSOLUTE_BOOLEAN_BIT_MB_C_OP( MOV1 );
+    ABSOLUTE_BOOLEAN_BIT_MB_C_WRITEOUT_OP( MOV1 );
 }
 static void fsBA_MOVW() {
-    DIRECT_YA_D_OP( MOVW_YA_D );
+    //DIRECT_YA_D_OP( MOVW_YA_D );
+    uint16_t YA = spcMemoryMapReadU16( direct_new( 0 ) );
+    storeYA( YA );
+    PSW = ( PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) ) 
+        | ( ( YA & 0x8000 ) ? SPC_NEGATIVE_FLAG : 0x00 )
+        | ( ( YA == 0 ) ? SPC_ZERO_FLAG : 0x00 );
 }
 static void fsDA_MOVW() {
-    storeU16( direct( 0 ), getYA() );
+    //DIRECT_D_YA_OP( MOVW_YA_D );
+    spcMemoryMapWriteU16( direct_new( 0 ), getYA() );
 }
 
 #pragma endregion
 
 #pragma region SPC_SET
-static void SET( uint8_t *O1, uint8_t mask ) {
-    *O1 |= mask;
+static inline uint8_t SET( uint8_t O1, uint8_t mask ) {
+    return O1 | mask;
 }
 static void fs02_SET1() {
-    DIRECT_PAGE_BIT_OP( SET, 0 );
+    DIRECT_PAGE_BIT_WRITEOUT_OP( SET, 0 );
 }
 static void fs22_SET1() {
-    DIRECT_PAGE_BIT_OP( SET, 1 );
+    DIRECT_PAGE_BIT_WRITEOUT_OP( SET, 1 );
 }
 static void fs42_SET1() {
-    DIRECT_PAGE_BIT_OP( SET, 2 );
+    DIRECT_PAGE_BIT_WRITEOUT_OP( SET, 2 );
 }
 static void fs62_SET1() {
-    DIRECT_PAGE_BIT_OP( SET, 3 );
+    DIRECT_PAGE_BIT_WRITEOUT_OP( SET, 3 );
 }
 static void fs82_SET1() {
-    DIRECT_PAGE_BIT_OP( SET, 4 );
+    DIRECT_PAGE_BIT_WRITEOUT_OP( SET, 4 );
 }
 static void fsA2_SET1() {
-    DIRECT_PAGE_BIT_OP( SET, 5 );
+    DIRECT_PAGE_BIT_WRITEOUT_OP( SET, 5 );
 }
 static void fsC2_SET1() {
-    DIRECT_PAGE_BIT_OP( SET, 6 );
+    DIRECT_PAGE_BIT_WRITEOUT_OP( SET, 6 );
 }
 static void fsE2_SET1() {
-    DIRECT_PAGE_BIT_OP( SET, 7 );
+    DIRECT_PAGE_BIT_WRITEOUT_OP( SET, 7 );
 }
 static void fs80_SETC() {
-    SET( &PSW, SPC_CARRY_FLAG );
+    PSW |= SPC_CARRY_FLAG;
 }
 static void fs40_SETP() {
-    SET( &PSW, SPC_P_FLAG );
+    PSW |= SPC_P_FLAG;
 }
 #pragma endregion
 
 #pragma region SPC_TCALL
-static void TCALL( uint16_t addr ) {
+static inline void TCALL( uint16_t addr ) {
     JMP( addr );
 }
 static void fs01_TCALL() {
@@ -1533,18 +1763,18 @@ static void fsF1_TCALL() {
 #pragma endregion
 
 #pragma region SPC_UNCATEGORISED
-static void fs3F_CALL( uint8_t *O1 ) {
+static void fs3F_CALL() {
     uint8_t r = ( next_program_counter >> 8 ) & 0x00FF;
-    PUSH( &r );
+    PUSH( r );
     r = next_program_counter & 0x00FF;
-    PUSH( &r );
-    next_program_counter = readU16( O1 );
+    PUSH( r );
+    next_program_counter = absolute_new();
+    ++PC;
 }
 
-static void CBNE( uint8_t* O1, uint8_t *R ) {
-    if ( A == *O1 ){
-        // TODO - should we be getting a word here?
-        next_program_counter = readU16( R );
+static void CBNE( uint8_t O1, uint16_t R ) {
+    if ( A == O1 ){
+        next_program_counter += (int8_t)R;
         opCycles += 2;
     }
 }
@@ -1585,18 +1815,19 @@ static void fsBE_DAS() {
         | ( ( A & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 );
 }
 
-static void DBNZ( uint8_t *O1, uint8_t *O2 ) {
-    --*O1;
-    if ( *O1 != 0 ) {
-        next_program_counter = curr_program_counter + *O2;
+static inline uint8_t DBNZ( uint8_t O1, uint8_t r ) {
+    --O1;
+    if ( O1 != 0 ) {
+        next_program_counter = next_program_counter + (int8_t)r;
         opCycles += 1;
     }
+    return O1;
 }
 static void fsFE_DBNZ() {
-    RELATIVE_OP_Y_R( DBNZ );
+    RELATIVE_Y_R_WRITEOUT_OP( DBNZ );
 }
 static void fs6E_DBNZ() {
-    RELATIVE_OP_D_R( DBNZ )
+    RELATIVE_D_R_WRITEOUT_OP( DBNZ )
 }
 
 static void fs9E_DIV() {
@@ -1620,10 +1851,10 @@ static void fs9E_DIV() {
             | ( ( A & 0x80 ) ? SPC_NEGATIVE_FLAG : 0x00 );
 }
 static void fsC0_DI() {
-    CLR( &PSW, SPC_INTERRUPT_FLAG );
+    PSW &= ~SPC_INTERRUPT_FLAG;
 }
 static void fsA0_EI() {
-    SET( &PSW, SPC_INTERRUPT_FLAG );
+    PSW |= SPC_INTERRUPT_FLAG;
 }
 static void fsCF_MUL() {
     // TODO
@@ -1637,28 +1868,30 @@ static void fsCF_MUL() {
 static void fs00_NOP() {
 }
 
-static bool NOT1( bool O1 ) {
-    return !O1;
+// TODO - might be able to simplify this
+static uint8_t NOT1( bool O1, uint8_t value, uint8_t mask ) {
+    UNUSED2( O1 );
+    return value ^ mask;
 }
 
 static void fsEA_NOT1() {
-    ABSOLUTE_BOOLEAN_BIT_MB_OP( NOT1 );
+    ABSOLUTE_BOOLEAN_BIT_MB_WRITEOUT_OP( NOT1 );
 }
 static void fsED_NOTC() {
     PSW = PSW ^ SPC_CARRY_FLAG;
 }
 
 static void fs4F_PCALL() {
-    next_program_counter = 0xFF00 + immediate_8();
+    next_program_counter = 0xFF00 + immediate_new();
 }
 static void fs6F_RET() {
     uint8_t h, l;
-    POP( &l );
-    POP( &h );
+    l = POP( 0 );
+    h = POP( 0 );
     next_program_counter = ( ( (uint16_t)h ) << 8 ) | (uint16_t) l;
 }
 static void fs7F_RET1() {
-    POP( &PSW );
+    PSW = POP( 0 );
     fs6F_RET();
 }
 static void fsEF_SLEEP() {
@@ -1669,23 +1902,25 @@ static void fsFF_STOP() {
     // TODO
 }
 
-static uint8_t *TSETCLR_BASE() {
-    uint8_t *a = absolute( 0 );
-    uint8_t temp = *a & A;
+static void fs4E_TCLR1() {
+    uint16_t addr = absolute_new();
+    uint8_t value = spcMemoryMapRead( addr );
+    uint8_t temp = value & A;
     PSW = ( PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) ) 
         | ( temp & 0x80 ? SPC_NEGATIVE_FLAG : 0x00 )
         | ( temp == 0 ? SPC_ZERO_FLAG : 0x00 );
-    
-    return a;
-}
 
-static void fs4E_TCLR1() {
-    uint8_t *a = TSETCLR_BASE();
-    *a &= ~A;
+    spcMemoryMapWrite( addr, value & ~A );
 }
 static void fs0E_TSET1() {
-    uint8_t *a = TSETCLR_BASE();
-    *a |= A;
+    uint16_t addr = absolute_new();
+    uint8_t value = spcMemoryMapRead( addr );
+    uint8_t temp = value & A;
+    PSW = ( PSW & ~( SPC_NEGATIVE_FLAG | SPC_ZERO_FLAG ) ) 
+        | ( temp & 0x80 ? SPC_NEGATIVE_FLAG : 0x00 )
+        | ( temp == 0 ? SPC_ZERO_FLAG : 0x00 );
+        
+    spcMemoryMapWrite( addr, value | A );
 }
 static void fs9F_XCN() {
     A = ( A >> 4 ) | ( A << 4 );

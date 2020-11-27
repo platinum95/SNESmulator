@@ -15,16 +15,23 @@
 #define Y_LOC 61
 #define P_LOC 68
 
+#define CARRY_FLAG  0x1
+#define ZERO_FLAG 0x2
+#define INTERRUPT_FLAG 0x04
+#define DECIMAL_FLAG 0x08
+#define OVERFLOW_FLAG 0x40
+#define NEGATIVE_FLAG 0x80
+#define M_FLAG 0x20
+#define X_FLAG 0x10
 
 
-void getLine( FILE * file, char buf[ 78 ] ) {
-    int n = 78;
-    char buf2[3];
-    fgets(buf, n, file);
-    fgets(buf2, 3, file);
+
+void getLine( FILE * file, char buf[ 0x100 ] ) {
+    int n = 0x100;
+    fgets( buf, n, file );
 }
 
-int hex_to_int(char hex_char) {
+uint8_t hex_to_int( char hex_char ) {
     switch (hex_char) {
     case '0':
         return 0;
@@ -57,21 +64,27 @@ int hex_to_int(char hex_char) {
         return 9;
         break;
     case 'A':
+    case 'a':
         return 10;
         break;
     case 'B':
+    case 'b':
         return 11;
         break;
     case 'C':
+    case 'c':
         return 12;
         break;
     case 'D':
+    case 'd':
         return 13;
         break;
     case 'E':
+    case 'e':
         return 14;
         break;
     case 'F':
+    case 'f':
         return 15;
         break;
     default:
@@ -81,48 +94,32 @@ int hex_to_int(char hex_char) {
     }
 }
 
-uint8_t get8(const char* line, int loc) {
-    char characters[2];
-    characters[0] = line[loc];
-    characters[1] = line[loc + 1];
-    uint8_t toRet = (hex_to_int(characters[0]) * 16) + (hex_to_int(characters[1]));
-    return toRet;
+uint8_t get8( const char* line ) {
+    uint8_t MSN = hex_to_int( line[ 0 ] );
+    uint8_t LSN = hex_to_int( line[ 1 ] );
+    return ( MSN << 4 ) | LSN;
 }
 
-uint16_t get16(const char* line, int loc) {
-    char characters[4];
-    characters[0] = line[loc];
-    characters[1] = line[loc + 1];
-    characters[2] = line[loc + 2];
-    characters[3] = line[loc + 3];
-    int vals[4];
-    vals[0] = hex_to_int(characters[0]);
-    vals[1] = hex_to_int(characters[1]);
-    vals[2] = hex_to_int(characters[2]);
-    vals[3] = hex_to_int(characters[3]);
-    uint16_t toRet = (vals[0] * 16 * 16 * 16) + (vals[1] * 16 * 16) + (vals[2] * 16) + (vals[3]);
-    return toRet;
+uint16_t get16( const char* line ) {
+    uint16_t MSB = (uint16_t)get8( line );;
+    uint16_t LSB = (uint16_t)get8( line + 2 );
+    return ( MSB << 8 ) | LSB;
 }
 
 // Parse P-Register values from (ex.) { eNvMxdIzC } -> { 010100101 }
-static uint8_t parsePRegister( const char* line, uint8_t *pRegOut ) {
-
-    bool emulation = false;
+static uint8_t parsePRegister( const char* line, bool *emulationMode ) {
     uint8_t pRegister = 0x00;
+    *emulationMode = false;
 
-    const char* pText = &line[ P_LOC ];
-
-    for (int i = 0; i < 9; i++) {
-        char flag = pText[ i ];
-        
-        // Igore lower-case
-        if ( flag >= 97 && flag <= 122 )
-            continue;
-
-        switch ( flag )
-        {
+    for ( uint8_t i = 0; i < 8; ++i ) {
+        char flag = line[ i ];
+        switch ( flag ) {
         case 'E':
-            emulation = true;
+        case '1':
+        case 'B':
+            pRegister |= X_FLAG;
+            pRegister |= M_FLAG;
+            *emulationMode = true;
             break;
         case 'N':
             pRegister |= NEGATIVE_FLAG;
@@ -148,30 +145,36 @@ static uint8_t parsePRegister( const char* line, uint8_t *pRegOut ) {
         case 'C':
             pRegister |= CARRY_FLAG;
             break;
+        case '.':
+        default:
+            break;
         }
     }
-    *pRegOut = pRegister;
-    return emulation;
+    return pRegister;
 }
-
-struct execution parseNextLine(FILE *file) {
-    char line[ 78 ];
+/*
+00ff70 sei                     A:0000 X:0000 Y:0000 S:01ff D:0000 DB:00 ..1B.I.. V:  0 H: 46 F: 0 C:      186
+*/
+ExecutionState parseNextLine( FILE *file ) {
+    char line[ 0x100 ];
     getLine( file, line );
-//    printf(line);
-//    printf("\n");
-    struct execution ex;
-    ex.program_bank_register = get8( line, PBR_LOC );
-    ex.program_counter = get16( line, PC_LOC );
-    ex.accumulator = get16( line, A_LOC );
-    ex.X = get16( line, X_LOC );
-    ex.Y = get16( line, Y_LOC );
-    ex.emulation_mode = parsePRegister( line, &ex.p_register );
+
+    ExecutionState ex;
+    ex.PBR = get8( line + 0 );
+    ex.PC = get16( line + 2 );
+    ex.A = get16( line + 33 );
+    ex.X = get16( line + 40 );
+    ex.Y = get16( line + 47 );
+    ex.SP = get16( line + 54 );
+    ex.DP = get16( line + 61 );
+    ex.DB = get8( line + 69 );
+    ex.pRegister = parsePRegister( line + 72, &ex.emulationMode );
     return ex;
 }
 
 FILE *comp_file;
 int start_comp() {
-    comp_file = fopen("exec_comp.txt", "r");
+    comp_file = fopen("exec_comp_1m.txt", "r");
     return 0;
 }
 
@@ -187,61 +190,102 @@ static void EncodePRegister( uint8_t regValue, char outBuffer[ 9 ] ) {
     outBuffer[ 8 ] = '\0';
 }
 
-static void printState( struct execution state ) {
+static void printExecutionState( const ExecutionState *state ) {
     char pRegister[ 9 ];
-    EncodePRegister( state.p_register, pRegister );
+    EncodePRegister( state->pRegister, pRegister );
 
-    printf( "\t%02x%04x | A:%04x | X:%04x | Y:%04x | P:%s | E:%i\n",
-        state.program_bank_register,
-        state.program_counter,
-        state.accumulator,
-        state.X,
-        state.Y,
+    printf( "\t%02x%04x | A:%04x | X:%04x | Y:%04x | DP:%04x | DB:%02x | SP:%04x | P:%s | E:%i\n",
+        state->PBR,
+        state->PC,
+        state->A,
+        state->X,
+        state->Y,
+        state->DP,
+        state->DB,
+        state->SP,
         pRegister,
-        state.emulation_mode );
-}  
+        state->emulationMode );
+}
 
-uint8_t compare( struct execution A ) {
-    struct execution B = parseNextLine(comp_file);
-    printState( A );
-    printState( B );
-    
-    if (A.program_bank_register != B.program_bank_register)
+uint8_t compareStates( const ExecutionState *groundTruth, const ExecutionState *currentState ) {
+    if ( currentState->PBR != groundTruth->PBR )
     {
         printf( "\tProgram Bank mismatch\n" );
         return 1;
     }
-    if (A.program_counter != B.program_counter)
+    if ( currentState->PC != groundTruth->PC )
     {
         printf( "\tProgram Counter mismatch\n" );
         return 2;
     }
-    if (A.accumulator != B.accumulator)
+    if ( currentState->A != groundTruth->A )
     {
         printf( "\tAccumulator mismatch\n" );
         return 3;
     }
-    if (A.X != B.X)
+    if ( currentState->X != groundTruth->X )
     {
         printf( "\tX Register mismatch\n" );
         return 4;
     }
-    if (A.Y != B.Y)
+    if ( currentState->Y != groundTruth->Y )
     {
         printf( "\tY Register mismatch\n" );
         return 5;
     }
-    if (A.emulation_mode != B.emulation_mode)
+    if ( currentState->emulationMode != groundTruth->emulationMode )
     {
         printf( "\tEmulation Mode mismatch\n" );
         return 6;
     }
-    if (A.p_register != B.p_register)
+    if ( currentState->pRegister != groundTruth->pRegister )
     {
         printf( "\tP Register mismatch\n" );
         return 7;
     }
-
+    if ( currentState->SP != groundTruth->SP )
+    {
+        printf( "\tSP mismatch\n" );
+        return 8;
+    }
+    if ( currentState->DB != groundTruth->DB )
+    {
+        printf( "\tDB mismatch\n" );
+        return 8;
+    }
+    if ( currentState->DP != groundTruth->DP )
+    {
+        printf( "\tDP mismatch\n" );
+        return 8;
+    }
     return 0;
+}
 
+// On PC mismatch, look ahead in ground truth data to attempt to resync.
+// Return true if resync successful, false otherwise
+static bool attemptResync( const ExecutionState *targetState ) {
+    printf( "Attempting resync...\n" );
+    for ( uint8_t i = 0; i < 60; ++i ) {
+        ExecutionState groundTruth = parseNextLine( comp_file );
+        if ( compareStates( &groundTruth, targetState ) == 0 ) {
+            printf( "Found matching state at +%i\n", i );
+            printExecutionState( &groundTruth );
+            return true;
+        }
+    }
+    printf( "Failed to find matching state\n" );
+    return false;
+}
+
+uint8_t compare( ExecutionState internalState ) {
+    ExecutionState groundTruth = parseNextLine( comp_file );
+    printExecutionState( &internalState );
+    printExecutionState( &groundTruth );
+
+    uint8_t comparison = compareStates( &groundTruth, &internalState );
+    if ( comparison == 2 && attemptResync( &internalState ) ) {
+        comparison = 0;
+    }
+    
+    return comparison;
 }
