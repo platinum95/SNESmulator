@@ -88,10 +88,12 @@ typedef struct ATTR_PACKED Registers {
     uint8_t timer2counter;
 } Registers;
 
+/*
 static inline uint8_t spcMemoryMapRead( uint16_t addr );
 static inline uint16_t spcMemoryMapReadU16( uint16_t addr ); // TODO - readU16 may need to know if page can increment, or just offset
 static inline void spcMemoryMapWrite( uint16_t addr, uint8_t value );
 static inline void spcMemoryMapWriteU16( uint16_t addr, uint16_t value ); // TODO - writeU16 may need to know if page can increment, or just offset
+*/
 
 /* Memory and registers */
 static uint8_t APUMemory[ 0xFFFF + 0x01 ];
@@ -195,13 +197,17 @@ void spc700_execute_next_instruction() {
 }
 
 /* Access the 4 visible bytes from the CPU */
-uint8_t *accessSpcComPort( uint8_t port, bool writeLine ) {
+void accessSpcComPort( uint8_t port, uint8_t *dataBus, bool writeLine ) {
     if ( port > 3 ) {
-        return NULL;
+        // TODO- throw signal
+        return;
     }
-    UNUSED2( writeLine );
-    //return writeLine ? &CPUWriteComPorts[ port ] : ( &registers->port0 ) + port;
-    return ( &registers->port0 ) + port;
+    if ( writeLine ) {
+        CPUWriteComPorts[ port ] = *dataBus;
+    }
+    else {
+        *dataBus = *( ( &registers->port0 ) + port );
+    }
 }
 
 
@@ -243,18 +249,18 @@ static inline void spcRegisterAccess( uint16_t addressBus, uint8_t *dataBus, boo
     else if ( addressBus <= 0xF7 ) {
         // Communication ports
         // TODO - can't handle read/write differently until the main CPU has a read/write-based bus
-        hostAddress = &APUMemory[ addressBus ];
-        /*
+        //hostAddress = &APUMemory[ addressBus ];
+        
         if ( writeLine ) {
             APUMemory[ addressBus ] = *dataBus;
             return;
         }
         else {
             // Need to read what main CPU wrote
-            *dataBus = CPUWriteComPorts[ addressBus - 0xF7 ];
+            *dataBus = CPUWriteComPorts[ addressBus - 0xF4 ];
             return;
         }
-        */
+        
     }
     else if ( addressBus <= 0xF9 ) {
         // Regular memory
@@ -284,7 +290,7 @@ static inline void spcRegisterAccess( uint16_t addressBus, uint8_t *dataBus, boo
 }
 
 // Might be better off breaking this into separate busRead and busWrite
-static inline void spcBusAccess( uint16_t addressBus, uint8_t* dataBus, bool writeLine ) {
+/* static inline */ void spcBusAccess( uint16_t addressBus, uint8_t* dataBus, bool writeLine ) {
     // The if-block mapping can explicitly handle read-writes & return if required.
     // Otherwise, we fall through and do a regular memory write
 
@@ -315,24 +321,24 @@ static inline void spcBusAccess( uint16_t addressBus, uint8_t* dataBus, bool wri
     }
 }
 
-static inline uint8_t spcMemoryMapRead( uint16_t addr ) {
+/*static inline*/ uint8_t spcMemoryMapRead( uint16_t addr ) {
     uint8_t dataValue;
     spcBusAccess( addr, &dataValue, false );
     return dataValue;
 }
 
 // TODO - readU16 may need to know if page can increment, or just offset
-static inline uint16_t spcMemoryMapReadU16( uint16_t addr ){
+/*static inline */uint16_t spcMemoryMapReadU16( uint16_t addr ){
     uint16_t dataValue = spcMemoryMapRead( addr );
     return dataValue | ( ( (uint16_t) spcMemoryMapRead( addr + 1 ) ) << 8 );
 }
 
-static inline void spcMemoryMapWrite( uint16_t addr, uint8_t value ) {
+/*static inline */void spcMemoryMapWrite( uint16_t addr, uint8_t value ) {
     spcBusAccess( addr, &value, true );
 }
 
 // TODO - writeU16 may need to know if page can increment, or just offset
-static inline void spcMemoryMapWriteU16( uint16_t addr, uint16_t value ) {
+/*static inline */void spcMemoryMapWriteU16( uint16_t addr, uint16_t value ) {
     spcMemoryMapWrite( addr, (uint8_t)( value & 0x00FF ) );
     spcMemoryMapWrite( addr + 1, (uint8_t) ( value >> 8 ) );
 } 

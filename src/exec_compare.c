@@ -207,58 +207,59 @@ static void printExecutionState( const ExecutionState *state ) {
         state->emulationMode );
 }
 
-uint8_t compareStates( const ExecutionState *groundTruth, const ExecutionState *currentState ) {
+ComparisonResult compareStates( const ExecutionState *groundTruth, const ExecutionState *currentState ) {
+    ComparisonResult result = Match;
     if ( currentState->PBR != groundTruth->PBR )
     {
         printf( "\tProgram Bank mismatch\n" );
-        return 1;
+        result |= ProgramBankMismatch;
     }
     if ( currentState->PC != groundTruth->PC )
     {
         printf( "\tProgram Counter mismatch\n" );
-        return 2;
+        result |= ProgramCounterMismatch;
     }
     if ( currentState->A != groundTruth->A )
     {
         printf( "\tAccumulator mismatch\n" );
-        return 3;
+        result |= AccumulatorMismatch;
     }
     if ( currentState->X != groundTruth->X )
     {
         printf( "\tX Register mismatch\n" );
-        return 4;
+        result |= XMismatch;
     }
     if ( currentState->Y != groundTruth->Y )
     {
         printf( "\tY Register mismatch\n" );
-        return 5;
+        result |= YMismatch;
     }
     if ( currentState->emulationMode != groundTruth->emulationMode )
     {
         printf( "\tEmulation Mode mismatch\n" );
-        return 6;
+        result |= EmulationModeMismatch;
     }
     if ( currentState->pRegister != groundTruth->pRegister )
     {
         printf( "\tP Register mismatch\n" );
-        return 7;
+        result |= PRegisterMismatch;
     }
     if ( currentState->SP != groundTruth->SP )
     {
         printf( "\tSP mismatch\n" );
-        return 8;
+        result |= StackPointerMismatch;
     }
     if ( currentState->DB != groundTruth->DB )
     {
         printf( "\tDB mismatch\n" );
-        return 8;
+        result |= DataBankMismatch;
     }
     if ( currentState->DP != groundTruth->DP )
     {
         printf( "\tDP mismatch\n" );
-        return 8;
+        result |= DirectPageMismatch;
     }
-    return 0;
+    return result;
 }
 
 // On PC mismatch, look ahead in ground truth data to attempt to resync.
@@ -277,14 +278,14 @@ static bool attemptResync( const ExecutionState *targetState ) {
     return false;
 }
 
-uint8_t compare( ExecutionState internalState ) {
+ComparisonResult compare( ExecutionState internalState ) {
     ExecutionState groundTruth = parseNextLine( comp_file );
     printExecutionState( &internalState );
     printExecutionState( &groundTruth );
 
     uint8_t comparison = compareStates( &groundTruth, &internalState );
-    if ( comparison == 2 && attemptResync( &internalState ) ) {
-        comparison = 0;
+    if ( ( comparison & ProgramCounterMismatch ) && attemptResync( &internalState ) ) {
+        comparison = Match;
     }
     
     return comparison;

@@ -29,7 +29,7 @@
 
 static bool inEmulationMode = 1;
 
-static uint16_t p_register;
+static uint8_t p_register;
 
 static uint16_t accumulator;
 static uint16_t PC;
@@ -83,6 +83,8 @@ ExecutionState GetExecutionState() {
     return state;
 }
 
+static inline uint8_t MainBusReadU8( MemoryAddress addressBus );
+
 uint8_t prev_instr = 0;
 
 // Used as the base address of the current operation
@@ -92,7 +94,7 @@ void ExecuteNextInstruction() {
     MemoryAddress instructionAddress = (MemoryAddress){ PBR, PC };
 
     instructionAddress.bank &= ~0x80;
-    uint8_t currentOpcode = *snesMemoryMap( instructionAddress );
+    uint8_t currentOpcode = MainBusReadU8( instructionAddress );
 
 #if 0
     static int counter = 0;
@@ -101,7 +103,8 @@ void ExecuteNextInstruction() {
         start_comp();
     }
     uint8_t comparison = compare( GetExecutionState() );
-    if ( comparison != 0 && comparison != 7 ) {
+    if ( comparison != Match && 
+        ( comparison & ~( AccumulatorMismatch | PRegisterMismatch ) ) ){
         // Current max score - 45873
         printf( "Mismatch\n" );
     }
@@ -121,14 +124,63 @@ void ExecuteNextInstruction() {
 
 }
 
+// TODO - split A and B bus up
+static inline void MainBusAccess( MemoryAddress addressBus, uint8_t *dataBus, bool writeLine ) {
+    snesMemoryMap( addressBus, dataBus, writeLine );
+}
+
+static inline uint8_t MainBusReadU8( MemoryAddress addressBus ) {
+    uint8_t value;
+    MainBusAccess( addressBus, &value, false );
+    return value;
+}
+
+static inline void MainBusWriteU8( MemoryAddress addressBus, uint8_t value ) {
+    MainBusAccess( addressBus, &value, true );
+}
+
+// TODO - handle page/bank wrapping for the 16-bit read/writes
+static inline uint16_t MainBusReadU16( MemoryAddress addressBus ) {
+    uint8_t lsb = MainBusReadU8( addressBus );
+    ++addressBus.offset;
+    uint8_t msb = MainBusReadU8( addressBus );
+
+    return ( ( (uint16_t) msb ) << 8 ) | (uint16_t)lsb;
+}
+
+static inline void MainBusWriteU16( MemoryAddress addressBus, uint16_t value ) {
+    MainBusWriteU8( addressBus, (uint8_t)( value & 0x00FF ) );
+    ++addressBus.offset;
+    MainBusWriteU8( addressBus, (uint8_t)( ( value >> 8 ) & 0x00FF ) );
+}
+
+// TODO - handle page/bank wrapping for the 16-bit read/writes
+static inline uint32_t MainBusReadU24( MemoryAddress addressBus ) {
+    uint32_t lsb = (uint32_t)MainBusReadU8( addressBus );
+    ++addressBus.offset;
+    uint32_t midsb = (uint32_t)MainBusReadU8( addressBus );
+    ++addressBus.offset;
+    uint32_t msb = (uint32_t)MainBusReadU8( addressBus );
+
+    return ( msb << 16 ) | ( midsb << 8 ) | lsb;
+}
+
+static inline void MainBusWriteU32( MemoryAddress addressBus, uint32_t value ) {
+    MainBusWriteU8( addressBus, (uint8_t)( value & 0x000000FF ) );
+    ++addressBus.offset;
+    MainBusWriteU8( addressBus, (uint8_t)( ( value >> 8 ) & 0x000000FF ) );
+    ++addressBus.offset;
+    MainBusWriteU8( addressBus, (uint8_t)( ( value >> 16 ) & 0x000000FF ) );
+}
+
 #pragma region addressing_modes
 
 
 // Hopefully RVO kicks in for these
 static inline MemoryAddress GetBusAddressFromLong( uint32_t longAddress ) {
     return (MemoryAddress) {
-        (uint8_t) ( longAddress >> 16 ),
-        (uint16_t) ( longAddress & 0x0000FF )
+        (uint8_t) ( ( longAddress >> 16 ) & 0xFF ),
+        (uint16_t) ( longAddress & 0x00FFFF )
     };
 }
 
@@ -144,117 +196,115 @@ static inline MemoryAddress GetProgramBankAddress( uint16_t offset ) {
     return GetBusAddress( PBR, offset );
 }
 
-static inline uint8_t* immediate() {
-    return snesMemoryMap( GetProgramBankAddress( PC++ ) );
-}
-
-static inline uint8_t immediateU8() {
-    return *immediate();
+// TODO - Should be immediateU8
+static inline uint8_t immediate() {
+    return MainBusReadU8( GetProgramBankAddress( PC++ ) );
 }
 
 static inline uint16_t immediateU16() {
-    uint16_t val = readU16( immediate() );
-    ++PC;
+    uint16_t val = ( (uint16_t)immediate() );
+    val |= ( (uint16_t)immediate() ) << 8;
+    return val;
+}
+
+static inline uint32_t immediateU24() {
+    uint32_t val = ( (uint32_t)immediate() );
+    val |= ( (uint32_t)immediate() ) << 8;
+    val |= ( (uint32_t)immediate() ) << 16;
     return val;
 }
 
 static inline int8_t relative() {
-    return (int8_t)*immediate();
+    return (int8_t)immediate();
 }
 
 static inline int16_t relativeLong() {
     return (int16_t)immediateU16();
 }
 
-static inline uint8_t* direct( uint16_t offset ) {
-    return snesMemoryMap( GetBusAddress( 0x00, DP + *immediate() + offset ) );
+static inline MemoryAddress direct( uint16_t offset ) {
+    // TODO - switch between DP and ZP based on emulation flag
+    return GetBusAddress( 0x00, DP + immediate() + offset );
 }
 
-static inline uint8_t* directIndexedIndirect( uint16_t indexOffset ) {
-    return snesMemoryMap( GetDataBankAddress( readU16( direct( indexOffset ) ) ) );
+static inline MemoryAddress directIndexedIndirect( uint16_t indexOffset ) {
+    // TODO - should the offset be masked in 8-bit-register mode?
+    return GetDataBankAddress( MainBusReadU16( direct( indexOffset ) ) );
 }
 
-static inline uint8_t* directIndirect() {
+static inline MemoryAddress directIndirect() {
     return directIndexedIndirect( 0 );
 }
 
-static inline uint8_t* directIndexedXIndirect() {
+static inline MemoryAddress directIndexedXIndirect() {
     return directIndexedIndirect( X );
 }
 
 // Returns a host-mem pointer to the emulated indirect address
-static inline uint8_t* directIndirectLong() {
-    return snesMemoryMap( GetBusAddressFromLong( readU24( direct( 0 ) ) ) );
+static inline MemoryAddress directIndirectLong() {
+    return GetBusAddressFromLong( MainBusReadU24( direct( 0 ) ) );
 }
 
-static inline uint8_t* directIndirectIndexedY() {
-    return snesMemoryMap( GetDataBankAddress( readU16( direct( 0 ) ) + Y ) );
+static inline MemoryAddress directIndirectIndexedY() {
+    return GetDataBankAddress( MainBusReadU16( direct( 0 ) ) + Y );
 }
 
-static inline uint8_t* directIndirectIndexedYLong() {
+static inline MemoryAddress directIndirectIndexedYLong() {
     // TODO - not sure how to handle overflow here, ie does bank increment?
-    MemoryAddress address = GetBusAddressFromLong( readU24( direct( 0 ) ) );
+    MemoryAddress address = GetBusAddressFromLong( MainBusReadU24( direct( 0 ) ) );
     address.offset += Y;
-    address.offset |= 0x8000; // ?
-    return snesMemoryMap( address );
+    //address.offset |= 0x8000; // ?
+    return address;
 }
 
-static inline uint16_t absoluteAsAddr( uint16_t offset ) {
-    uint16_t addr = readU16( immediate() ) + offset;
-    ++PC;
-    return addr;
+static inline uint16_t absoluteAsAddrOffset( uint16_t offset ) {
+    return immediateU16() + offset;
 }
 
-static inline uint8_t* absolute( uint16_t offset ) {
-    uint8_t *addr = snesMemoryMap( GetDataBankAddress( absoluteAsAddr( offset ) ) );
-    return addr;
+static inline MemoryAddress absolute( uint16_t offset ) {
+    return GetDataBankAddress( absoluteAsAddrOffset( offset ) );
 }
 
-static inline uint8_t* absoluteIndexedX() {
+static inline MemoryAddress absoluteIndexedX() {
     return absolute( X );
 }
 
-static inline uint8_t* absoluteIndexedY() {
+static inline MemoryAddress absoluteIndexedY() {
     return absolute( Y );
 }
 
 static inline MemoryAddress absoluteLongAsAddr( uint16_t offset ) {
     // TODO - not sure how to handle overflow here, ie does bank increment?
-    MemoryAddress address = GetBusAddressFromLong( readU24( immediate() ) );
-    PC += 3;
+    MemoryAddress address = GetBusAddressFromLong( immediateU24() );
     address.offset += offset;
     return address;
 }
 
-static inline uint8_t* absoluteLong( uint16_t offset ) {
-    return snesMemoryMap( absoluteLongAsAddr( offset ) );
+static inline MemoryAddress absoluteLong( uint16_t offset ) {
+    return absoluteLongAsAddr( offset );
 }
 
-static inline uint8_t* absoluteLongIndexedX() {
+static inline MemoryAddress absoluteLongIndexedX() {
     // TODO - not sure how to handle overflow here, ie does bank increment?
     return absoluteLong( X );
 }
 
-static inline uint8_t* absoluteIndirect() {
-    uint16_t absolute = readU16( immediate() );
-    ++PC;
-    return snesMemoryMap( GetDataBankAddress( absolute ) );
+static inline MemoryAddress absoluteIndirect() {
+    return GetDataBankAddress( immediateU16() );
 }
 
-static inline uint8_t* absoluteIndexedXIndirect() {
-    uint16_t absolute = readU16( immediate() );
-    ++PC;
-    return snesMemoryMap( GetDataBankAddress( absolute + X ) );
+static inline MemoryAddress absoluteIndexedXIndirect() {
+    return GetDataBankAddress( immediateU16() + X );
 }
 
-static inline uint8_t* stackRelative() {
+static inline MemoryAddress stackRelative() {
     // TODO - should the relative part be signed?
-    return snesMemoryMap( GetBusAddress( 0x00, SP + *immediate() ) );
+    return GetBusAddress( 0x00, SP + immediate() );
 }
 
-static inline uint8_t* stackRelativeIndirectIndexedY() {
+static inline MemoryAddress stackRelativeIndirectIndexedY() {
     // TODO - verify
-    return snesMemoryMap( GetDataBankAddress( readU16( stackRelative() ) + Y ) );
+    return GetDataBankAddress( MainBusReadU16( stackRelative() ) + Y );
 }
 
 #pragma endregion
@@ -265,8 +315,8 @@ static inline uint8_t* stackRelativeIndirectIndexedY() {
 #pragma region stack_access
 // TODO - stack accessors should handle emulation mode
 
-static inline void pushU8( uint8_t val ) {
-    *snesMemoryMap( GetBusAddress( 0x00, SP-- ) ) = val;
+static inline void pushU8( uint8_t value ) {
+    MainBusWriteU8( GetBusAddress( 0x00, SP-- ), value );
 }
 
 static inline void pushU16( uint16_t val ) {
@@ -275,7 +325,7 @@ static inline void pushU16( uint16_t val ) {
 }
  
 static inline uint8_t popU8() {
-    return *snesMemoryMap( GetBusAddress( 0x00, ++SP ) );
+    return MainBusReadU8( GetBusAddress( 0x00, ++SP ) );
 }
 
 static inline uint16_t popU16() {
@@ -300,282 +350,302 @@ static inline uint16_t popU16() {
      return carry;
  }
  
- 
- static inline void ADC( uint8_t *O1 ) {
-     // TODO - rewrite all this
-     bool decimal = ( p_register & DECIMAL_FLAG );
-     bool op8 = ( p_register & M_FLAG );
+ static inline void ADC8( uint8_t O1 ) {
+    bool decimal = ( p_register & DECIMAL_FLAG );
+    uint8_t a = accumulator, b, r;
 
-     uint16_t zero = 0x00;
-     uint16_t carry = 0x00;
-     uint16_t negative = 0x00;
-     uint16_t overflow = 0x00;
+    uint8_t zero = 0x00;
+    uint8_t carry = 0x00;
+    uint8_t negative = 0x00;
+    uint8_t overflow = 0x00;
 
-     if ( op8 ){
-         uint8_t a = accumulator, b, r;
-         if ( decimal ) {
-             uint8_t carryVal = ( p_register & CARRY_FLAG ) ? 0x01 : 0x00;
-             uint16_t sum = 0;
-             for ( int i = 0; i < 2; ++i ) {
-                 uint8_t reg = ( accumulator & ( 0x000F << ( i * 4 ) ) ) >> ( i * 4 );
-                 uint8_t toAddy = ( *O1 & ( 0x000F << ( i * 4 ) ) ) >> ( i * 4 );
-                 carryVal = BCD_ADD_NYBBLE( &reg, toAddy + carryVal );
-                 sum |= reg << ( i * 4 );
-             }
-             a = b = accumulator;
-             r = accumulator = sum;
-             carry = carryVal ? CARRY_FLAG : carry;
-         }
-         else {
-             const uint16_t rhs16 = (uint16_t) ( *O1 );
-             const uint16_t lhs16 = rhs16 + ( ( CARRY_FLAG & p_register ) ? 0x01 : 0x00 ) + ( accumulator & 0x00ff );
-             b = *O1;
-             if ( lhs16 & 0xFF00 )    //Check for carry            
-                 carry = CARRY_FLAG;
+    if ( decimal ) {
+        uint8_t carryVal = ( p_register & CARRY_FLAG ) ? 0x01 : 0x00;
+        uint16_t sum = 0;
+        for ( int i = 0; i < 2; ++i ) {
+            uint8_t reg = ( accumulator & ( 0x000F << ( i * 4 ) ) ) >> ( i * 4 );
+            uint8_t toAddy = ( O1 & ( 0x000F << ( i * 4 ) ) ) >> ( i * 4 );
+            carryVal = BCD_ADD_NYBBLE( &reg, toAddy + carryVal );
+            sum |= reg << ( i * 4 );
+        }
+        a = b = accumulator;
+        r = accumulator = sum;
+        carry = carryVal ? CARRY_FLAG : carry;
+    }
+    else {
+        const uint16_t rhs16 = (uint16_t) ( O1 );
+        const uint16_t lhs16 = rhs16 + ( ( CARRY_FLAG & p_register ) ? 0x01 : 0x00 ) + ( accumulator & 0x00ff );
+        b = O1;
+        //Check for carry
+        if ( lhs16 & 0xFF00 ) {
+            carry = CARRY_FLAG;
+        }
 
-             accumulator &= 0xff00;// lhs16; // accumulator + toAdd + (CARRY_FLAG & p_register);
-             accumulator |= ( lhs16 & 0x00ff );
-             r = accumulator;
-         }
-         
-         zero = ( ( accumulator & 0x00FF ) == 0 ) ? ZERO_FLAG : zero;
-         negative = ( accumulator & 0x0080 ) ? NEGATIVE_FLAG : negative;
-         if ( ( ( a & 0x80 ) == ( b & 0x80 ) ) && ( ( r & 0x80 ) != ( a & 0x80 ) ) ) {
-             overflow = OVERFLOW_FLAG;
-         }
-     }
- 
-     else {
-         //--------------------------------------------------------------------------
-         uint8_t d_on = p_register & DECIMAL_FLAG;
-         uint16_t a = accumulator, b, r;
-         uint16_t toAdd = readU16( O1 );
-         if (d_on > 0) {
-             uint8_t carryVal = p_register & CARRY_FLAG;
-             uint16_t sum = 0;
-             for (int i = 0; i < 4; i++) {
-                 uint8_t reg = (accumulator & (0x000F << (i * 4))) >> i * 4;
-                 uint8_t toAddy = (toAdd & (0x000F << (i * 4))) >> i * 4;
-                 carryVal = BCD_ADD_NYBBLE(&reg, toAddy + carryVal);
-                 uint16_t val = reg;
-                 val <<= i * 4;
-                 sum |= val;
-             }
-             a = b = accumulator;
-             r = accumulator = sum;
-             //set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-             if ( carryVal )
-                 carry = CARRY_FLAG;
-
-         }
-         else {
-             b = toAdd;
-             accumulator = accumulator + toAdd + (1 & p_register);
-             r = accumulator;
-         }
-         if(((a & 0x8000) == (b & 0x8000)) && ((r & 0x8000) != (a & 0x8000)))
-             overflow = OVERFLOW_FLAG;
-         zero = ( accumulator == 0 ) ? ZERO_FLAG : zero;
-         negative = ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : negative;
- 
-         //set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
-     }
-
-      p_register = ( p_register & ~( NEGATIVE_FLAG | CARRY_FLAG | ZERO_FLAG | OVERFLOW_FLAG ) )
-            | negative | zero | carry | overflow;
+        accumulator &= 0xff00;// lhs16; // accumulator + toAdd + (CARRY_FLAG & p_register);
+        accumulator |= ( lhs16 & 0x00ff );
+        r = accumulator;
+    }
+    
+    zero = ( ( accumulator & 0x00FF ) == 0 ) ? ZERO_FLAG : zero;
+    negative = ( accumulator & 0x0080 ) ? NEGATIVE_FLAG : negative;
+    if ( ( ( a & 0x80 ) == ( b & 0x80 ) ) && ( ( r & 0x80 ) != ( a & 0x80 ) ) ) {
+        overflow = OVERFLOW_FLAG;
+    }
+    p_register = ( p_register & ~( NEGATIVE_FLAG | CARRY_FLAG | ZERO_FLAG | OVERFLOW_FLAG ) )
+        | negative | zero | carry | overflow;
  }
+ 
+static inline void ADC16( uint16_t O1 ) {
+    // TODO - rewrite all this
+    bool decimal = ( p_register & DECIMAL_FLAG );
+    uint8_t zero = 0x00;
+    uint8_t carry = 0x00;
+    uint8_t negative = 0x00;
+    uint8_t overflow = 0x00;
+    //--------------------------------------------------------------------------
+    uint8_t d_on = p_register & DECIMAL_FLAG;
+    uint16_t a = accumulator, b, r;
+    uint16_t toAdd = O1;
+    if (d_on > 0) {
+        uint8_t carryVal = p_register & CARRY_FLAG;
+        uint16_t sum = 0;
+        for (int i = 0; i < 4; i++) {
+            uint8_t reg = (accumulator & (0x000F << (i * 4))) >> i * 4;
+            uint8_t toAddy = (toAdd & (0x000F << (i * 4))) >> i * 4;
+            carryVal = BCD_ADD_NYBBLE(&reg, toAddy + carryVal);
+            uint16_t val = reg;
+            val <<= i * 4;
+            sum |= val;
+        }
+        a = b = accumulator;
+        r = accumulator = sum;
+        //set_p_register_16(accumulator, NEGATIVE_FLAG | ZERO_FLAG);
+        if ( carryVal )
+            carry = CARRY_FLAG;
+    }
+    else {
+        b = toAdd;
+        accumulator = accumulator + toAdd + (1 & p_register);
+        r = accumulator;
+    }
+    if(((a & 0x8000) == (b & 0x8000)) && ((r & 0x8000) != (a & 0x8000)))
+        overflow = OVERFLOW_FLAG;
+    zero = ( accumulator == 0 ) ? ZERO_FLAG : zero;
+    negative = ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : negative;
+    
+     p_register = ( p_register & ~( NEGATIVE_FLAG | CARRY_FLAG | ZERO_FLAG | OVERFLOW_FLAG ) )
+           | negative | zero | carry | overflow;
+}
+
+static inline void ADCMem( MemoryAddress address ) {
+    if ( p_register & M_FLAG ) {
+        // 8-bit mode
+        ADC8( MainBusReadU8( address ) );
+    }
+    else {
+        // 16-bit mode
+        ADC16( MainBusReadU16( address ) );
+    }
+}
  
  //ADC(_dp_, X)    61    DP Indexed Indirect, X    NV� - ZC    2
  void f61_ADC(){
-     ADC( directIndexedXIndirect() );
-     ++PC;
+     ADCMem( directIndexedXIndirect() );
  }
  
  //ADC sr, S    63    Stack Relative    NV� - ZC    2
  void f63_ADC(){
-     ADC( stackRelative() );
-     ++PC;
+     ADCMem( stackRelative() );
  }
  
  //ADC dp    65    Direct Page    NV� - ZC    2
  void f65_ADC(){
-     ADC( direct( 0 ) );
-     ++PC;
+     ADCMem( direct( 0 ) );
  }
  
  //ADC[_dp_]    67    DP Indirect Long    NV� - ZC    2
  void f67_ADC(){
-     ADC( directIndirectLong() );
-     ++PC;
+     ADCMem( directIndirectLong() );
  }
  
  //ADC #const    69    Immediate    NV� - ZC    2/3
- void f69_ADC(){
-     // TODO - maybe immediateMFlag() or something?
-    if ( !( p_register & M_FLAG ) ) {
+void f69_ADC(){
+    // TODO - maybe immediateMFlag() or something?
+    if ( p_register & M_FLAG ) {
+        ADC8( immediate() );
+    }
+    else {
+        ADC16( immediateU16() );
         ++nextOperationOffset;
     }
-     ADC( immediate() );
- }
+}
  
  //ADC addr    6D    Absolute    NV� - ZC    3
- void f6D_ADC(){
-     ADC( absolute( 0 ) );
-     ++PC;
- }
+void f6D_ADC(){
+    ADCMem( absolute( 0 ) );
+}
  
- //ADC long    6F    Absolute Long    NV� - ZC    4
- void f6F_ADC(){
-     ADC( absoluteLong( 0 ) );
-     ++PC;
- }
- 
- //ADC(dp), Y    71    DP Indirect Indexed, Y    NV� - ZC    2
- void f71_ADC(){
-     ADC( directIndirectIndexedY() );
-     ++PC;
- }
- 
-  //ADC(_dp_)    72    DP Indirect    NV� - ZC    2
- void f72_ADC(){
-     ADC( directIndirect() );
-    ++PC;
+//ADC long    6F    Absolute Long    NV� - ZC    4
+void f6F_ADC(){
+    ADCMem( absoluteLong( 0 ) );
+}
+
+//ADC(dp), Y    71    DP Indirect Indexed, Y    NV� - ZC    2
+void f71_ADC(){
+    ADCMem( directIndirectIndexedY() );
+}
+
+ //ADC(_dp_)    72    DP Indirect    NV� - ZC    2
+void f72_ADC(){
+    ADCMem( directIndirect() );
 }
 
  //ADC(_sr_, S), Y    73    SR Indirect Indexed, Y    NV� - ZC    2
 void f73_ADC(){
-    ADC( stackRelativeIndirectIndexedY() );
-    ++PC;
+    ADCMem( stackRelativeIndirectIndexedY() );
 }
 
  //ADC dp, X    75    DP Indexed, X    NV� - ZC    2
 void f75_ADC(){
-    ADC( direct( X ) );
-    ++PC;
+    ADCMem( direct( X ) );
 }
 
  //ADC[_dp_], Y    77    DP Indirect Long Indexed, Y    NV� - ZC    2
 void f77_ADC(){
     // TODO - verify
-    ADC( directIndirectIndexedYLong() );
-    ++PC;
+    ADCMem( directIndirectIndexedYLong() );
 }
 
  //ADC addr, Y    79    Absolute Indexed, Y    NV� - ZC    3
 void f79_ADC(){
-    ADC( absoluteIndexedY() );
-    ++PC;
+    ADCMem( absoluteIndexedY() );
 }
 
  //ADC addr, X    7D    Absolute Indexed, X    NV� - ZC    3
 void f7D_ADC(){
-    ADC( absoluteIndexedX() );
-    ++PC;
+    ADCMem( absoluteIndexedX() );
 }
 
  //ADC long, X    7F    Absolute Long Indexed, X    NV� - ZC    4
 void f7F_ADC(){
-    ADC( absoluteLongIndexedX() );
-    ++PC;
+    ADCMem( absoluteLongIndexedX() );
 }
 
 #pragma endregion
 
 #pragma region AND
-static inline void AND( uint8_t *O1 ) {
-    uint16_t negative = 0x00;
-    uint16_t zero = 0x00;
-    if ( p_register & M_FLAG ){
-        accumulator = ( accumulator & 0XFF00 ) | ( accumulator & *O1 );
-        negative = ( accumulator & 0x0080 ) ? NEGATIVE_FLAG : negative;
-        zero = ( ( accumulator & 0x00FF ) == 0 ) ? ZERO_FLAG : zero;
-    }
-    else{
-        accumulator &= readU16( O1 );
-        negative = ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : negative;
-        zero = ( accumulator == 0 ) ? ZERO_FLAG : zero;
-    }
+static inline void AND8( uint8_t O1 ) {
+    uint8_t negative = 0x00;
+    uint8_t zero = 0x00;
+
+    accumulator = ( accumulator & 0XFF00 ) | ( accumulator & O1 );
+    negative = ( accumulator & 0x0080 ) ? NEGATIVE_FLAG : negative;
+    zero = ( ( accumulator & 0x00FF ) == 0 ) ? ZERO_FLAG : zero;
 
     p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG ) )
         | zero | negative;
 }
 
+static inline void AND16( uint16_t O1 ) {
+    uint8_t negative = 0x00;
+    uint8_t zero = 0x00;
+
+    accumulator &= O1;
+    negative = ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : negative;
+    zero = ( accumulator == 0 ) ? ZERO_FLAG : zero;
+
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG ) )
+        | zero | negative;
+}
+
+static inline void ANDMem( MemoryAddress address ) {
+    if ( p_register & M_FLAG ) {
+        AND8( MainBusReadU8( address ) );
+    }
+    else {
+        AND16( MainBusReadU16( address ) );
+    }
+}
+
  //AND(_dp, _X)    21    DP Indexed Indirect, X    N��Z - 2
 void f21_AND(){
-    AND( directIndexedXIndirect() );
+    ANDMem( directIndexedXIndirect() );
 }
 
  //AND sr, S    23    Stack Relative    N��Z - 2
 void f23_AND(){
-    AND( stackRelative() );
+    ANDMem( stackRelative() );
 }
 
 ////AND dp    25    Direct Page    N��Z - 2
 void f25_AND(){
-    AND( direct( 0 ) );
+    ANDMem( direct( 0 ) );
 }
 
 ////AND[_dp_]    27    DP Indirect Long    N��Z - 2
 void f27_AND(){
-    AND( directIndirectLong() );
+    ANDMem( directIndirectLong() );
 }
 
 ////AND #const    29    Immediate    N��Z - 2
 void f29_AND(){
-    if ( !( p_register & M_FLAG ) ) {
+    if ( p_register & M_FLAG ) {
+        AND8( immediate() );
+    }
+    else {
+        AND16( immediateU16() );
         ++nextOperationOffset;
     }
-    AND( immediate() );
 }
 
 ////AND addr    2D    Absolute    N��Z - 3
 void f2D_AND(){
-    AND( absolute( 0 ) );
+    ANDMem( absolute( 0 ) );
 }
 
 ////AND long    2F    Absolute Long    N��Z - 4
 void f2F_AND(){
-    AND( absoluteLong( 0 ) );
+    ANDMem( absoluteLong( 0 ) );
 }
 
 ////AND(_dp_), Y    31    DP Indirect Indexed, Y    N��Z - 2
 void f31_AND(){
-    AND( directIndirectIndexedY( 0 ) );
+    ANDMem( directIndirectIndexedY( 0 ) );
 }
 
 ////AND(_dp_)    32    DP Indirect    N��Z - 2
 void f32_AND(){
-    AND( directIndirect() );
+    ANDMem( directIndirect() );
 }
 
 ////AND(_sr_, S), Y    33    SR Indirect Indexed, Y    N��Z - 2
 void f33_AND(){
-    AND( stackRelativeIndirectIndexedY() );
+    ANDMem( stackRelativeIndirectIndexedY() );
 }
 
 ////AND dp, X    35    DP Indexed, X    N��Z - 2
 void f35_AND(){
-    AND( direct( X ) );
+    ANDMem( direct( X ) );
 }
 
 ////AND[_dp_], Y    37    DP Indirect Long Indexed, Y    N��Z - 2
 void f37_AND(){
-    AND( directIndirectIndexedYLong() );
+    ANDMem( directIndirectIndexedYLong() );
 }
 
 ////AND addr, Y    39    Absolute Indexed, Y    N��Z - 3
 void f39_AND(){
-    AND( absoluteIndexedY() );
+    ANDMem( absoluteIndexedY() );
 }
 
 ////AND addr, X    3D    Absolute Indexed, X    N��Z - 3
 void f3D_AND(){
-    AND( absoluteIndexedX() );
+    ANDMem( absoluteIndexedX() );
 }
 
 ////AND long, X    3F    Absolute Long Indexed, X    N��Z - 4
 void f3F_AND(){
-    AND( absoluteLongIndexedX() );
+    ANDMem( absoluteLongIndexedX() );
 }
 
 #pragma endregion
@@ -605,35 +675,81 @@ void ASL( uint8_t *O1 ){
         | negative | zero | carry;
 }
 
+static inline uint8_t ASL8( uint8_t O1 ) {
+    uint8_t negative = 0x00;
+    uint8_t zero = 0x00;
+    uint8_t carry = 0x00;
+
+    carry = O1 & 0x80;
+    uint8_t result = ( O1 << 1 ) & 0xFE;
+    zero = ( result == 0 ) ? ZERO_FLAG : zero;
+    negative = ( result & 0x80 ) ? NEGATIVE_FLAG : negative;
+
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG | CARRY_FLAG ) )
+        | negative | zero | carry;
+
+    return result;
+}
+
+static inline uint16_t ASL16( uint16_t O1 ) {
+    uint8_t negative = 0x00;
+    uint8_t zero = 0x00;
+    uint8_t carry = 0x00;
+
+    uint16_t val = O1;
+    carry = ( val & 0x8000 ) ? CARRY_FLAG : carry;
+    val = val << 1;
+    zero = ( val == 0 ) ? ZERO_FLAG : zero;
+    negative = ( val & 0x8000 ) ? NEGATIVE_FLAG : negative;
+
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG | CARRY_FLAG ) )
+        | negative | zero | carry;
+
+    return val;
+}
+
+static inline void ASLMem( MemoryAddress address ) {
+    if ( p_register & M_FLAG ) {
+        MainBusWriteU8( address, ASL8( MainBusReadU8( address ) ) );
+    }
+    else {
+        MainBusWriteU16( address, ASL8( MainBusReadU16( address ) ) );
+    }
+}
 
 ////ASL dp    6    Direct Page    N��ZC    2
 void f06_ASL(){
-    ASL( direct( 0 ) );
+    ASLMem( direct( 0 ) );
 }
 
 ////ASL A    0A    Accumulator    N��ZC    1
 void f0A_ASL(){
-    ASL( (uint8_t*)&accumulator );
+    if ( p_register & M_FLAG ) {
+        accumulator = ( accumulator & 0xFF00 ) | ASL8( (uint8_t)accumulator );
+    }
+    else {
+        accumulator = ASL16( accumulator );
+    }
 }
 
 ////ASL addr    0E    Absolute    N��ZC    3
 void f0E_ASL(){
-    ASL( absolute( 0 ) );
+    ASLMem( absolute( 0 ) );
 }
 
 ////ASL dp, X    16    DP Indexed, X    N��ZC    2
 void f16_ASL(){
-    ASL( direct( X ) );
+    ASLMem( direct( X ) );
 }
 
 ////ASL addr, X    1E    Absolute Indexed, X    N��ZC    3
 void f1E_ASL(){
-    ASL( absoluteIndexedX() );
+    ASLMem( absoluteIndexedX() );
 }
 #pragma endregion
 
 static inline void BranchRelativeOnCondition( bool condition ) {
-    int8_t offset = (int8_t) *immediate();
+    int8_t offset = (int8_t) immediate();
     if ( condition ){
         nextOperationOffset += offset;
     }
@@ -694,65 +810,81 @@ void f00_BRK(){
 
 ////BRL label    82    Program Counter Relative Long        3
 void f82_BRL(){
-    int16_t offset = (int16_t) readU16( immediate() );
+    int16_t offset = (int16_t) immediateU16();
     nextOperationOffset += offset;
 }
 
 
 #pragma region BIT
 
-static inline void BIT( uint8_t *O1 ){
+static inline void BIT8( uint8_t O1 ){
     uint8_t negative = 0x00;
     uint8_t overflow = 0x00;
     uint8_t zero = 0x00;
 
-    if ( p_register & M_FLAG ) {
-        uint8_t result = (uint8_t) ( accumulator & 0x00FF ) & *O1;
-        zero = ( result == 0 ) ? ZERO_FLAG : zero;
-        negative = ( *O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
-        overflow = ( *O1 & 0x40 ) ? OVERFLOW_FLAG : overflow;
-    }
-    else {
-        uint16_t O1U16 = readU16( O1 );
-        uint16_t result = accumulator & O1U16;
-        zero = ( result == 0 ) ? ZERO_FLAG : zero;
-        negative = ( O1U16 & 0x8000 ) ? NEGATIVE_FLAG : negative;
-        overflow = ( O1U16 & 0x4000 ) ? OVERFLOW_FLAG : overflow;
-    }
+    uint8_t result = (uint8_t) ( accumulator & 0x00FF ) & O1;
+    zero = ( result == 0 ) ? ZERO_FLAG : zero;
+    negative = ( O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
+    overflow = ( O1 & 0x40 ) ? OVERFLOW_FLAG : overflow;
+
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG | OVERFLOW_FLAG  ) )
+        | zero | negative | overflow;
+}
+
+static inline void BIT16( uint16_t O1 ){
+    uint8_t negative = 0x00;
+    uint8_t overflow = 0x00;
+    uint8_t zero = 0x00;
+
+    uint16_t result = accumulator & O1;
+    zero = ( result == 0 ) ? ZERO_FLAG : zero;
+    negative = ( O1 & 0x8000 ) ? NEGATIVE_FLAG : negative;
+    overflow = ( O1 & 0x4000 ) ? OVERFLOW_FLAG : overflow;
     
     p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG | OVERFLOW_FLAG  ) )
         | zero | negative | overflow;
+}
 
+static inline void BITMem( MemoryAddress address ) {
+    if ( p_register & M_FLAG ) {
+        BIT8( MainBusReadU8( address ) );
+    }
+    else {
+        BIT16( MainBusReadU16( address ) );
+    }
 }
 
 ////BIT dp    24    Direct Page    NV� - Z - 2
 void f24_BIT(){
-    BIT( direct( 0 ) );
+    BITMem( direct( 0 ) );
 }
 
 ////BIT addr    2C    Absolute    NV� - Z - 3
 void f2C_BIT(){
-    BIT( absolute( 0 ) );
+    BITMem( absolute( 0 ) );
 }
 
 ////BIT dp, X    34    DP Indexed, X    NV� - Z - 2
 void f34_BIT(){
-    BIT( direct( X ) );
+    BITMem( direct( X ) );
 }
 
 ////BIT addr, X    3C    Absolute Indexed, X    NV� - Z - 3
 void f3C_BIT(){
-    BIT( absoluteIndexedX() );
+    BITMem( absoluteIndexedX() );
 }
 
 ////BIT #const    89    Immediate    ��Z - 2
 void f89_BIT(){
     // TODO ensure N and V are unaffected
     uint16_t pRegisterPersistent = p_register & ( NEGATIVE_FLAG | OVERFLOW_FLAG );
-    if ( !( p_register & M_FLAG ) ) {
+    if ( p_register & M_FLAG ) {
+        BIT8( immediate() );
+    }
+    else {
+        BIT16( immediateU16() );
         ++nextOperationOffset;
     }
-    BIT( immediate() );
     p_register = ( p_register & ~( NEGATIVE_FLAG | OVERFLOW_FLAG ) ) | pRegisterPersistent;
 }
 #pragma endregion 
@@ -779,178 +911,164 @@ void fB8_CLV(){
 
 #pragma region cmp
 
-void CMP_8(uint8_t reg, uint8_t data) {
-    uint8_t result = reg - data;
-    if (result == 0)
-        p_register |= ZERO_FLAG;
-    else
-        p_register &= ~ZERO_FLAG;
-
-    if (result & 0x80)
-        p_register |= NEGATIVE_FLAG;
-    else
-        p_register &= ~NEGATIVE_FLAG;
-
-    if(reg >= data)
-        p_register |= CARRY_FLAG;
-    else
-        p_register &= ~CARRY_FLAG;
-}
-
-void CMP_16(uint16_t reg, uint16_t data) {
-    uint16_t result = reg - data;
-    if (result == 0)
-        p_register |= ZERO_FLAG;
-    else
-        p_register &= ~ZERO_FLAG;
-
-    if (result & 0x8000)
-        p_register |= NEGATIVE_FLAG;
-    else
-        p_register &= ~NEGATIVE_FLAG;
-
-    if (reg >= data)
-        p_register |= CARRY_FLAG;
-    else
-        p_register &= ~CARRY_FLAG;
-}
-
-void CMP( uint16_t registerValue, uint8_t *O1, uint16_t mask ) {
+static inline void CMP8( uint8_t registerValue, uint8_t O1 ) {
     uint16_t zero = 0x00;
     uint16_t negative = 0x00;
     uint16_t carry = 0x00;
-    if ( p_register & mask ) {
-        uint8_t regU8 = (uint8_t) ( registerValue & 0x00FF );
-        uint8_t O1U8 = *O1;
-        uint8_t res = regU8 - O1U8;
-        zero = ( res == 0 ) ? ZERO_FLAG : 0x00;
-        negative = ( res & 0x80 ) ? NEGATIVE_FLAG : 0x00;
-        carry = ( regU8 >= O1U8 ) ? CARRY_FLAG : 0x00;
-    }
-    else {
-        uint16_t O1U16 = readU16( O1 );
-        uint16_t res = registerValue - O1U16;
-        zero = ( res == 0 ) ? ZERO_FLAG : 0x00;
-        negative = ( res & 0x8000 ) ? NEGATIVE_FLAG : 0x00;
-        carry = ( registerValue >= O1U16 ) ? CARRY_FLAG : 0x00;
-    }
+
+    uint8_t regU8 = (uint8_t) ( registerValue & 0x00FF );
+    uint8_t O1U8 = O1;
+    uint8_t res = regU8 - O1U8;
+    zero = ( res == 0 ) ? ZERO_FLAG : 0x00;
+    negative = ( res & 0x80 ) ? NEGATIVE_FLAG : 0x00;
+    carry = ( regU8 >= O1U8 ) ? CARRY_FLAG : 0x00;
 
     p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG | CARRY_FLAG ) )
         | zero | negative | carry;
 }
+static inline void CMP16( uint16_t registerValue, uint16_t O1 ) {
+    uint16_t zero = 0x00;
+    uint16_t negative = 0x00;
+    uint16_t carry = 0x00;
+    uint16_t O1U16 = O1;
+    uint16_t res = registerValue - O1U16;
+    zero = ( res == 0 ) ? ZERO_FLAG : 0x00;
+    negative = ( res & 0x8000 ) ? NEGATIVE_FLAG : 0x00;
+    carry = ( registerValue >= O1U16 ) ? CARRY_FLAG : 0x00;
+
+    p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG | CARRY_FLAG ) )
+        | zero | negative | carry;
+}
+static inline void CMPMem( uint16_t registerValue, MemoryAddress address, uint8_t mask ) {
+    if ( p_register & mask ) {
+        CMP8( (uint8_t)registerValue, MainBusReadU8( address ) );
+    }
+    else {
+        CMP16( registerValue, MainBusReadU16( address ) );
+    }
+}
 
 ////CMP(_dp, _X)    C1    DP Indexed Indirect, X    N��ZC    2
 void fC1_CMP(){
-    CMP( accumulator, directIndexedXIndirect(), M_FLAG );
+    CMPMem( accumulator, directIndexedXIndirect(), M_FLAG );
 }
 
 ////CMP sr, S    C3    Stack Relative    N��ZC    2
 void fC3_CMP(){
-    CMP( accumulator, stackRelative(), M_FLAG );
+    CMPMem( accumulator, stackRelative(), M_FLAG );
 }
 
 ////CMP dp    C5    Direct Page    N��ZC    2
 void fC5_CMP(){
-    CMP( accumulator, direct( 0 ), M_FLAG );
+    CMPMem( accumulator, direct( 0 ), M_FLAG );
 }
 
 ////CMP[_dp_]    C7    DP Indirect Long    N��ZC    2
 void fC7_CMP(){
-    CMP( accumulator, directIndirectLong(), M_FLAG );
+    CMPMem( accumulator, directIndirectLong(), M_FLAG );
 }
 
 ////CMP #const    C9    Immediate    N��ZC    2
 void fC9_CMP(){
-    if ( !( p_register & M_FLAG ) ) {
+    if ( p_register & M_FLAG ) {
+        CMP8( (uint8_t)accumulator, immediate() );
+    }
+    else {
+        CMP16( accumulator, immediateU16() );
         ++nextOperationOffset;
     }
-    CMP( accumulator, immediate(), M_FLAG );
 }
 
 ////CMP addr    CD    Absolute    N��ZC    3
 void fCD_CMP(){
-    CMP( accumulator, absolute( 0 ), M_FLAG );
+    CMPMem( accumulator, absolute( 0 ), M_FLAG );
 }
 
 ////CMP long    CF    Absolute Long    N��ZC    4
 void fCF_CMP(){
-    CMP( accumulator, absoluteLong( 0 ), M_FLAG );
+    CMPMem( accumulator, absoluteLong( 0 ), M_FLAG );
 }
 
 ////CMP(_dp_), Y    D1    DP Indirect Indexed, Y    N��ZC    2
 void fD1_CMP(){
-    CMP( accumulator, directIndirectIndexedY(), M_FLAG );
+    CMPMem( accumulator, directIndirectIndexedY(), M_FLAG );
 }
 
 ////CMP(_dp_)    D2    DP Indirect    N��ZC    2
 void fD2_CMP(){
-    CMP( accumulator, directIndirect(), M_FLAG );
+    CMPMem( accumulator, directIndirect(), M_FLAG );
 }
 
 ////CMP(_sr_, S), Y    D3    SR Indirect Indexed, Y    N��ZC    2
 void fD3_CMP(){
-    CMP( accumulator, stackRelativeIndirectIndexedY(), M_FLAG );
+    CMPMem( accumulator, stackRelativeIndirectIndexedY(), M_FLAG );
 }
 
 ////CMP dp, X    D5    DP Indexed, X    N��ZC    2
 void fD5_CMP(){
-    CMP( accumulator, direct( X ), M_FLAG );
+    CMPMem( accumulator, direct( X ), M_FLAG );
 }
 
 ////CMP[_dp_], Y    D7    DP Indirect Long Indexed, Y    N��ZC    2
 void fD7_CMP(){
-    CMP( accumulator, directIndirectIndexedYLong(), M_FLAG );
+    CMPMem( accumulator, directIndirectIndexedYLong(), M_FLAG );
 }
 
 ////CMP addr, Y    D9    Absolute Indexed, Y    N��ZC    3
 void fD9_CMP(){
-    CMP( accumulator, absoluteIndexedY(), M_FLAG );
+    CMPMem( accumulator, absoluteIndexedY(), M_FLAG );
 }
 
 ////CMP addr, X    DD    Absolute Indexed, X    N��ZC    3
 void fDD_CMP(){
-    CMP( accumulator, absoluteIndexedX(), M_FLAG );
+    CMPMem( accumulator, absoluteIndexedX(), M_FLAG );
 }
 
 ////CMP long, X    DF    Absolute Long Indexed, X    N��ZC    4
 void fDF_CMP(){
-    CMP( accumulator, absoluteLongIndexedX(), M_FLAG );
+    CMPMem( accumulator, absoluteLongIndexedX(), M_FLAG );
 }
 
 ////CPX #const    E0    Immediate    N��ZC    210
 void fE0_CPX(){
-    if ( !( p_register & X_FLAG ) ) {
+    if ( p_register & X_FLAG ) {
+        CMP16( (uint8_t)X, immediate() );
+    }
+    else {
+        CMP16( X, immediateU16() );
         ++nextOperationOffset;
-    }   
-    CMP( X, immediate(), X_FLAG );
+    }
 }
 
 ////CPX dp    E4    Direct Page    N��ZC    2
 void fE4_CPX(){
-    CMP( X, direct( 0 ), X_FLAG );
+    CMPMem( X, direct( 0 ), X_FLAG );
 }
 
 ////CPX addr    EC    Absolute    N��ZC    3
 void fEC_CPX(){
-    CMP( X, absolute( 0 ), X_FLAG );
+    CMPMem( X, absolute( 0 ), X_FLAG );
 }
 
 ////CPY #const    C0    Immediate    N��ZC    2
 void fC0_CPY(){
-    if ( !( p_register & X_FLAG ) ) {
+    if ( p_register & X_FLAG ) {
+        CMP16( (uint8_t)Y, immediate() );
+    }
+    else {
+        CMP16( Y, immediateU16() );
         ++nextOperationOffset;
     }
-    CMP( Y, immediate(), X_FLAG );
 }
 
 ////CPY dp    C4    Direct Page    N��ZC    2
 void fC4_CPY(){
-    CMP( Y, direct( 0 ), X_FLAG );
+    CMPMem( Y, direct( 0 ), X_FLAG );
 }
 
 ////CPY addr    CC    Absolute    N��ZC    3
 void fCC_CPY(){
-    CMP( Y, absolute( 0 ), X_FLAG );
+    CMPMem( Y, absolute( 0 ), X_FLAG );
 }
 #pragma endregion
 
@@ -962,478 +1080,649 @@ void f02_COP() {
 
 #pragma region INC_DEC
 
-static inline void DEC( uint8_t *O1, uint16_t mask ) {
-    uint16_t negative = 0x00;
-    uint16_t zero = 0x00;
-    if ( p_register & mask ) {
-        --*O1;
-        negative = ( *O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
-        zero = ( *O1 == 0x00 ) ? ZERO_FLAG : negative;
-    }
-    else {
-        uint16_t result = readU16( O1 ) - 1;
-        storeU16( O1, result );
-        negative = ( result & 0x8000 ) ? NEGATIVE_FLAG : negative;
-        zero = ( result == 0x00 ) ? ZERO_FLAG : negative;
-    }
+static inline uint8_t DEC8( uint8_t O1 ) {
+    uint8_t negative = 0x00;
+    uint8_t zero = 0x00;
+
+    --O1;
+    negative = ( O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
+    zero = ( O1 == 0x00 ) ? ZERO_FLAG : negative;
 
     p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG ) )
         | zero | negative;
+
+    return O1;
+}
+
+static inline uint16_t DEC16( uint16_t O1 ) {
+    uint8_t negative = 0x00;
+    uint8_t zero = 0x00;
+    --O1;
+    negative = ( O1 & 0x8000 ) ? NEGATIVE_FLAG : negative;
+    zero = ( O1 == 0x00 ) ? ZERO_FLAG : negative;
+
+    p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG ) )
+        | zero | negative;
+
+    return O1;
+}
+
+static inline void DECMem( MemoryAddress address ) {
+    if ( p_register & M_FLAG ) {
+        MainBusWriteU8( address, DEC8( MainBusReadU8( address ) ) );
+    }
+    else {
+        MainBusWriteU16( address, DEC16( MainBusReadU16( address ) ) );
+    }
 }
 
 ////DEC A    3A    Accumulator    N��Z - 1
 void f3A_DEC(){
-    DEC( (uint8_t*) &accumulator, M_FLAG );
+    if ( p_register & M_FLAG ) {
+        accumulator = ( accumulator & 0xFF00 ) | DEC8( (uint8_t)accumulator );
+    }
+    else {
+        accumulator = DEC16( accumulator );
+    }
 }
 
 ////DEC dp    C6    Direct Page    N��Z - 2
 void fC6_DEC(){
-    DEC( direct( 0 ), M_FLAG );
+    DECMem( direct( 0 ) );
 }
 
 ////DEC addr    CE    Absolute    N��Z - 3
 void fCE_DEC(){
-    DEC( absolute( 0 ), M_FLAG );
+    DECMem( absolute( 0 ) );
 }
 
 ////DEC dp, X    D6    DP Indexed, X    N��Z - 2
 void fD6_DEC(){
-    DEC( direct( X ), M_FLAG );
+    DECMem( direct( X ) );
 }
 
 ////DEC addr, X    DE    Absolute Indexed, X    N��Z - 3
 void fDE_DEC(){
-    DEC( absoluteIndexedX(), M_FLAG );
+    DECMem( absoluteIndexedX() );
 }
 
 ////DEX    CA    Implied    N��Z - 1
 void fCA_DEX(){
-    DEC( (uint8_t*) &X, X_FLAG );
+    if ( p_register & X_FLAG ) {
+        X = ( X & 0xFF00 ) | DEC8( (uint8_t)X );
+    }
+    else {
+        X = DEC16( X );
+    }
 }
 
 ////DEY    88    Implied    N��Z - 1
 void f88_DEY(){
-    DEC( (uint8_t*) &Y, X_FLAG );
-}
-
-static inline void INC( uint8_t *O1, uint16_t mask ) {
-    uint16_t negative = 0x00;
-    uint16_t zero = 0x00;
-    if ( p_register & mask ) {
-        ++*O1;
-        negative = ( *O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
-        zero = ( *O1 == 0x00 ) ? ZERO_FLAG : negative;
+    if ( p_register & X_FLAG ) {
+        Y = ( Y & 0xFF00 ) | DEC8( (uint8_t)Y );
     }
     else {
-        uint16_t result = readU16( O1 ) + 1;
-        storeU16( O1, result );
-        negative = ( result & 0x8000 ) ? NEGATIVE_FLAG : negative;
-        zero = ( result == 0x00 ) ? ZERO_FLAG : negative;
+        Y = DEC16( Y );
     }
+}
+
+static inline uint8_t INC8( uint8_t O1 ) {
+    uint8_t negative = 0x00;
+    uint8_t zero = 0x00;
+
+    ++O1;
+    negative = ( O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
+    zero = ( O1 == 0x00 ) ? ZERO_FLAG : negative;
+
     p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG ) )
         | zero | negative;
+
+    return O1;
+}
+
+static inline uint16_t INC16( uint16_t O1 ) {
+    uint8_t negative = 0x00;
+    uint8_t zero = 0x00;
+    ++O1;
+    negative = ( O1 & 0x8000 ) ? NEGATIVE_FLAG : negative;
+    zero = ( O1 == 0x00 ) ? ZERO_FLAG : negative;
+
+    p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG ) )
+        | zero | negative;
+
+    return O1;
+}
+
+static inline void INCMem( MemoryAddress address ) {
+    if ( p_register & M_FLAG ) {
+        MainBusWriteU8( address, INC8( MainBusReadU8( address ) ) );
+    }
+    else {
+        MainBusWriteU16( address, INC16( MainBusReadU16( address ) ) );
+    }
 }
 
 ////INC A    1A    Accumulator    N��Z - 1
 void f1A_INC() {
-    INC( (uint8_t*) &accumulator, M_FLAG );
+    if ( p_register & M_FLAG ) {
+        accumulator = ( accumulator & 0xFF00 ) | INC8( (uint8_t)accumulator );
+    }
+    else {
+        accumulator = INC16( accumulator );
+    }
 }
 
 ////INC dp    E6    Direct Page    N��Z - 2
 void fE6_INC() {
-    INC( direct( 0 ), M_FLAG );
+    INCMem( direct( 0 ) );
 }
 
 ////INC addr    EE    Absolute    N��Z - 3
 void fEE_INC() {
-    INC( absolute( 0 ), M_FLAG );
+    INCMem( absolute( 0 ) );
 }
 
 ////INC dp, X    F6    DP Indexed, X    N��Z - 2
 void fF6_INC() {
-    INC( direct( X ), M_FLAG );
+    INCMem( direct( X ) );
 }
 
 ////INC addr, X    FE    Absolute Indexed, X    N��Z - 3
 void fFE_INC() {
-    INC( absoluteIndexedX(), M_FLAG );
+    INCMem( absoluteIndexedX() );
 }
 
 ////INX    E8    Implied    N��Z - 1
 void fE8_INX() {
-    INC( (uint8_t*) &X, X_FLAG );
+    if ( p_register & X_FLAG ) {
+        X = ( X & 0xFF00 ) | INC8( (uint8_t)X );
+    }
+    else {
+        X = INC16( X );
+    }
 }
 
 ////INY    C8    Implied    N��Z - 1
 void fC8_INY() {
-    INC( (uint8_t*) &Y, X_FLAG );
+    if ( p_register & X_FLAG ) {
+        Y = ( Y & 0xFF00 ) | INC8( (uint8_t)Y );
+    }
+    else {
+        Y = INC16( Y );
+    }
 }
 #pragma endregion
 
 #pragma region EOR
 
-static inline void EOR( uint8_t *O1 ) {
+static inline void EOR8( uint8_t O1 ) {
     uint16_t negative = 0x00;
     uint16_t zero = 0x00;
-    if ( p_register & M_FLAG ) {
-        uint8_t result = ( (uint8_t) ( accumulator & 0x00FF ) ) ^ *O1;
-        negative = ( result & 0x80 ) ? NEGATIVE_FLAG : negative;
-        zero = ( result == 0x00 ) ? ZERO_FLAG : negative;
-    }
-    else {
-        uint16_t result = accumulator ^ readU16( O1 );
-        negative = ( result & 0x8000 ) ? NEGATIVE_FLAG : negative;
-        zero = ( result == 0x00 ) ? ZERO_FLAG : negative;
-    }
+
+    uint8_t result = ( (uint8_t) ( accumulator & 0x00FF ) ) ^ O1;
+    negative = ( result & 0x80 ) ? NEGATIVE_FLAG : negative;
+    zero = ( result == 0x00 ) ? ZERO_FLAG : negative;
 
     p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG ) )
         | zero | negative;
 }
 
+static inline void EOR16( uint16_t O1 ) {
+    uint16_t negative = 0x00;
+    uint16_t zero = 0x00;
+    uint16_t result = accumulator ^ O1;
+    negative = ( result & 0x8000 ) ? NEGATIVE_FLAG : negative;
+    zero = ( result == 0x00 ) ? ZERO_FLAG : negative;
+
+    p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG ) )
+        | zero | negative;
+}
+
+static inline void EORMem( MemoryAddress address ) {
+    if ( p_register & M_FLAG ) {
+        EOR8( MainBusReadU8( address ) );
+    }
+    else {
+        EOR16( MainBusReadU16( address ) );
+    }
+}
+
 ////EOR(_dp, _X)    41    DP Indexed Indirect, X    N��Z - 2
 void f41_EOR(){
-    EOR( directIndexedXIndirect() );
+    EORMem( directIndexedXIndirect() );
 }
 
 ////EOR sr, S    43    Stack Relative    N��Z - 2
 void f43_EOR(){
-    EOR( stackRelative() );
+    EORMem( stackRelative() );
 }
 
 ////EOR dp    45    Direct Page    N��Z - 2
 void f45_EOR(){
-    EOR( direct( 0 ) );
+    EORMem( direct( 0 ) );
 }
 
 ////EOR[_dp_]    47    DP Indirect Long    N��Z - 2
 void f47_EOR(){
-    EOR( directIndirectLong() );
+    EORMem( directIndirectLong() );
 }
 
 ////EOR #const    49    Immediate    N��Z - 2
 void f49_EOR(){
-    if ( !( p_register & M_FLAG ) ) {
+    if ( p_register & M_FLAG ) {
+        EOR8( immediate() );
+    }
+    else {
+        EOR16( immediateU16() );
         ++nextOperationOffset;
     }
-    EOR( immediate() );
 }
 
 ////EOR addr    4D    Absolute    N��Z - 3
 void f4D_EOR(){
-    EOR( absolute( 0 ) );
+    EORMem( absolute( 0 ) );
 }
 
 ////EOR long    4F    Absolute Long    N��Z - 4
 void f4F_EOR(){
-    EOR( absoluteLong( 0 ) );
+    EORMem( absoluteLong( 0 ) );
 }
 
 ////EOR(_dp_), Y    51    DP Indirect Indexed, Y    N��Z - 2
 void f51_EOR(){
-    EOR( directIndirectIndexedY( 0 ) );
+    EORMem( directIndirectIndexedY( 0 ) );
 }
 
 ////EOR(_dp_)    52    DP Indirect    N��Z - 2
 void f52_EOR(){
-    EOR( directIndirect() );
+    EORMem( directIndirect() );
 }
 
 ////EOR(_sr_, S), Y    53    SR Indirect Indexed, Y    N��Z - 2
 void f53_EOR(){
-    EOR( stackRelativeIndirectIndexedY() );
+    EORMem( stackRelativeIndirectIndexedY() );
 }
 
 ////EOR dp, X    55    DP Indexed, X    N��Z - 2
 void f55_EOR(){
-    EOR( direct( X ) );
+    EORMem( direct( X ) );
 }
 
 ////EOR[_dp_], Y    57    DP Indirect Long Indexed, Y    N��Z - 2
 void f57_EOR(){
-    EOR( directIndirectIndexedYLong() );
+    EORMem( directIndirectIndexedYLong() );
 }
 
 ////EOR addr, Y    59    Absolute Indexed, Y    N��Z - 3
 void f59_EOR(){
-    EOR( absoluteIndexedY() );
+    EORMem( absoluteIndexedY() );
 }
 
 ////EOR addr, X    5D    Absolute Indexed, X    N��Z - 3
 void f5D_EOR(){
-    EOR( absoluteIndexedX() );
+    EORMem( absoluteIndexedX() );
 }
 
 ////EOR long, X    5F    Absolute Long Indexed, X    N��Z - 4
 void f5F_EOR(){
-    EOR( absoluteLongIndexedX() );
+    EORMem( absoluteLongIndexedX() );
 }
 #pragma endregion
 
 #pragma region JMP
 
-static inline void JMP( uint8_t *O1 ) {
-    nextOperationOffset = readU16( O1 );
+static inline void JMP( uint16_t O1 ) {
+    nextOperationOffset = O1;
+}
+static inline void JMPMem( MemoryAddress address ){
+    JMP( MainBusReadU16( address ) );
 }
 
-static inline void JMPL( uint8_t *O1 ) {
-    uint32_t addr = readU24( O1 );
-    PBR = ( addr >> 16 ) & 0x00FF;
-    nextOperationOffset = addr & 0xFFFF;
+static inline void JMPL( uint32_t O1 ) {
+    MemoryAddress address = GetBusAddressFromLong( O1 );
+    PBR = address.bank;
+    nextOperationOffset = address.offset;
+}
+static inline void JMPLMem( MemoryAddress address ) {
+    JMPL( MainBusReadU24( address ) );
 }
 
 ////JMP addr    4C    Absolute        3
 void f4C_JMP(){
-    JMP( immediate( 0 ) );
-    ++PC;
+    JMP( immediateU16() );
 }
 
 ////JMP long    5C    Absolute Long        4
 void f5C_JMP(){
-    JMPL( immediate() );
-    PC += 2;
+    JMPL( immediateU24() );
 }
 
 ////JMP(_addr_)    6C    Absolute Indirect        3
 void f6C_JMP(){
-    JMP( absoluteIndirect() );
+    JMPMem( absoluteIndirect() );
 }
 
 ////JMP(_addr, X_)    7C    Absolute Indexed Indirect        3
 void f7C_JMP(){
     // TODO - verify
-    JMP( absoluteIndexedXIndirect() );
+    JMPMem( absoluteIndexedXIndirect() );
 }
 
 ////JMP[addr]    DC    Absolute Indirect Long        3
 void fDC_JMP(){
     // TODO - verify
-    JMPL( absoluteIndirect() );
+    JMPLMem( absoluteIndirect() );
 }
 
-static inline void JSR( uint8_t *O1 ) {
-    pushU16( PC );
+static inline void JSR( uint16_t O1 ) {
+    pushU16( nextOperationOffset - 1 );
     JMP( O1 );
 }
 
 ////JSR addr    20    Absolute        3
 void f20_JSR(){
-    JSR( immediate( 0 ) );
+    JSR( immediateU16() );
 }
 
 ////JSR or JSL long    22    Absolute Long        4
 void f22_JSR(){
     pushU8( PBR );
-    pushU16( PC + 2 );
-    JMPL( immediate( 0 ) );
+    pushU16( nextOperationOffset - 1 );
+    JMPL( immediateU24() );
 }
 
 ////JSR(addr, X))    FC    Absolute Indexed Indirect        3
 void fFC_JSR(){
     // Not sure if this should be dereferenced
-    JSR( absoluteIndexedXIndirect() );
+    JSR( MainBusReadU16( absoluteIndexedXIndirect() ) );
 }
 #pragma endregion
 
 #pragma region LD
 
-// TODO - switch to getter/setter for target
-static inline void LD( uint16_t mask, uint16_t *targetReg, uint8_t *O1 ) {
+static inline uint8_t LD8( uint8_t O1 ) {
     uint16_t negative = 0x00;
     uint16_t zero = 0x00;
-    if ( p_register & mask ) {
-        negative = ( *O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
-        zero = ( *O1 == 0 ) ? ZERO_FLAG : zero;
-
-        *targetReg = ( *targetReg & 0xFF00 ) | (uint16_t) *O1;
-    }
-    else {
-        *targetReg = readU16( O1 );
-        negative = ( *targetReg & 0x8000 ) ? NEGATIVE_FLAG : negative;
-        zero = ( *targetReg == 0 ) ? ZERO_FLAG : zero;
-    }
+    
+    negative = ( O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
+    zero = ( O1 == 0 ) ? ZERO_FLAG : zero;
+    
     p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG ) )
         | zero | negative;
+
+    return O1;
 }
+static inline uint16_t LD16( uint16_t O1 ) {
+    uint16_t negative = 0x00;
+    uint16_t zero = 0x00;
+
+    negative = ( O1 & 0x8000 ) ? NEGATIVE_FLAG : negative;
+    zero = ( O1 == 0 ) ? ZERO_FLAG : zero;
+
+    p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG ) )
+        | zero | negative;
+
+    return O1;
+}
+
+static inline void LDA8( uint8_t O1 ) {
+    accumulator = ( accumulator & 0xFF00 ) | (uint16_t) LD8( O1 );
+}
+static inline void LDA16( uint16_t O1 ) {
+    accumulator = LD16( O1 );
+}
+static inline void LDAMem( MemoryAddress address ) {
+    if ( p_register & M_FLAG ) {
+        LDA8( MainBusReadU8( address ) );
+    }
+    else {
+        LDA16( MainBusReadU16( address ) );
+    }
+}
+
+static inline void LDX8( uint8_t O1 ) {
+    X = ( X & 0xFF00 ) | (uint16_t) LD8( O1 );
+}
+static inline void LDX16( uint16_t O1 ) {
+    X = LD16( O1 );
+}
+static inline void LDXMem( MemoryAddress address ) {
+    if ( p_register & X_FLAG ) {
+        LDX8( MainBusReadU8( address ) );
+    }
+    else {
+        LDX16( MainBusReadU16( address ) );
+    }
+}
+
+static inline void LDY8( uint8_t O1 ) {
+    Y = ( Y & 0xFF00 ) | (uint16_t) LD8( O1 );
+}
+static inline void LDY16( uint16_t O1 ) {
+    Y = LD16( O1 );
+}
+static inline void LDYMem( MemoryAddress address ) {
+    if ( p_register & X_FLAG ) {
+        LDY8( MainBusReadU8( address ) );
+    }
+    else {
+        LDY16( MainBusReadU16( address ) );
+    }
+}
+
 
 ////LDA(_dp, _X)    A1    DP Indexed Indirect, X    N��Z - 2
 void fA1_LDA(){
-    LD( M_FLAG, &accumulator, directIndexedXIndirect() );
+    LDAMem( directIndexedXIndirect() );
 }
 
 ////LDA sr, S    A3    Stack Relative    N��Z - 2
 void fA3_LDA(){
-    LD( M_FLAG, &accumulator, stackRelative() );
+    LDAMem( stackRelative() );
 }
 
 ////LDA dp    A5    Direct Page    N��Z - 2
 void fA5_LDA(){
-    LD( M_FLAG, &accumulator, direct( 0 ) );
+    LDAMem( direct( 0 ) );
 }
 
 ////LDA[_dp_]    A7    DP Indirect Long    N��Z - 2
 void fA7_LDA(){
-    LD( M_FLAG, &accumulator, directIndirectLong() );
+    LDAMem( directIndirectLong() );
 }
 
 ////LDA #const    A9    Immediate    N��Z - 2
 void fA9_LDA(){
-    if ( !( p_register & M_FLAG ) ) {
+    if ( p_register & M_FLAG ) {
+        LDA8( immediate() );
+    }
+    else {
+        LDA16( immediateU16() );
         ++nextOperationOffset;
     }
-    LD( M_FLAG, &accumulator, immediate() );
 }
 
 ////LDA addr    AD    Absolute    N��Z - 3
 void fAD_LDA(){
-    LD( M_FLAG, &accumulator, absolute( 0 ) );
+    LDAMem( absolute( 0 ) );
 }
 
 ////LDA long    AF    Absolute Long    N��Z - 4
 void fAF_LDA(){
-    LD( M_FLAG, &accumulator, absoluteLong( 0 ) );
+    LDAMem( absoluteLong( 0 ) );
 }
 
 ////LDA(_dp_), Y    B1    DP Indirect Indexed, Y    N��Z - 2
 void fB1_LDA(){
-    LD( M_FLAG, &accumulator, directIndirectIndexedY( 0 ) );
+    LDAMem( directIndirectIndexedY( 0 ) );
 }
 
 ////LDA(_dp_)    B2    DP Indirect    N��Z - 2
 void fB2_LDA(){
-    LD( M_FLAG, &accumulator, directIndirect() );
+    LDAMem( directIndirect() );
 }
 
 ////LDA(_sr_, S), Y    B3    SR Indirect Indexed, Y    N��Z - 2
 void fB3_LDA(){
-    LD( M_FLAG, &accumulator, stackRelativeIndirectIndexedY() );
+    LDAMem( stackRelativeIndirectIndexedY() );
 }
 
 ////LDA dp, X    B5    DP Indexed, X    N��Z - 2
 void fB5_LDA(){
-    LD( M_FLAG, &accumulator, direct( X ) );
+    LDAMem( direct( X ) );
 }
 
 ////LDA[_dp_], Y    B7    DP Indirect Long Indexed, Y    N��Z - 2
 void fB7_LDA(){
-    LD( M_FLAG, &accumulator, directIndirectIndexedYLong() );
+    LDAMem( directIndirectIndexedYLong() );
 }
 
 ////LDA addr, Y    B9    Absolute Indexed, Y    N��Z - 3
 void fB9_LDA(){
-    LD( M_FLAG, &accumulator, absoluteIndexedY() );
+    LDAMem( absoluteIndexedY() );
 }
 
 ////LDA addr, X    BD    Absolute Indexed, X    N��Z - 3
 void fBD_LDA(){
-    LD( M_FLAG, &accumulator, absoluteIndexedX() );
+    LDAMem( absoluteIndexedX() );
 }
 
 ////LDA long, X    BF    Absolute Long Indexed, X    N��Z - 4
 void fBF_LDA(){
-    LD( M_FLAG, &accumulator, absoluteLongIndexedX() );
+    LDAMem( absoluteLongIndexedX() );
 }
 
 ////LDX #const    A2    Immediate    N��Z - 212
 void fA2_LDX(){
-    if ( !( p_register & X_FLAG ) ) {
+    if ( p_register & X_FLAG ) {
+        LDX8( immediate() );
+    }
+    else {
+        LDX16( immediateU16() );
         ++nextOperationOffset;
     }
-    LD( X_FLAG, &X, immediate() );
 }
 
 ////LDX dp    A6    Direct Page    N��Z - 2
 void fA6_LDX(){
-    LD( X_FLAG, &X, direct( 0 ) );
+    LDXMem( direct( 0 ) );
 }
 
 ////LDX addr    AE    Absolute    N��Z - 3
 void fAE_LDX(){
-    LD( X_FLAG, &X, absolute( 0 ) );
+    LDXMem( absolute( 0 ) );
 }
 
 ////LDX dp, Y    B6    DP Indexed, Y    N��Z - 2
 void fB6_LDX(){
-    LD( X_FLAG, &X, direct( Y ) );
+    LDXMem( direct( Y ) );
 }
 
 ////LDX addr, Y    BE    Absolute Indexed, Y    N��Z - 3
 void fBE_LDX(){
-    LD( X_FLAG, &X, absoluteIndexedY() );
+    LDXMem( absoluteIndexedY() );
 }
 
 ////LDY #const    A0    Immediate    N��Z - 2
 void fA0_LDY(){
-    if ( !( p_register & X_FLAG ) ) {
+    if ( p_register & X_FLAG ) {
+        LDY8( immediate() );
+    }
+    else {
+        LDY16( immediateU16() );
         ++nextOperationOffset;
     }
-    LD( X_FLAG, &Y, immediate() );
 }
 
 ////LDY dp    A4    Direct Page    N��Z - 2
 void fA4_LDY(){
-    LD( X_FLAG, &Y, direct( 0 ) );
+    LDYMem( direct( 0 ) );
 }
 
 ////LDY addr    AC    Absolute    N��Z - 3
 void fAC_LDY(){
-    LD( X_FLAG, &Y, absolute( 0 ) );
+    LDYMem( absolute( 0 ) );
 }
 
 ////LDY dp, X    B4    DP Indexed, X    N��Z - 2
 void fB4_LDY(){
-    LD( X_FLAG, &Y, direct( X ) );
+    LDYMem( direct( X ) );
 }
 
 ////LDY addr, X    BC    Absolute Indexed, X    N��Z - 3
 void fBC_LDY(){
-    LD( X_FLAG, &Y, absoluteIndexedX() );
+    LDYMem( absoluteIndexedX() );
 }
 #pragma endregion
 
 #pragma region LSR
 
-static inline void LSR( uint8_t *O1 ) {
-    uint16_t zero = 0x00;
-    uint16_t carry = 0x00;
-    if ( p_register & M_FLAG ) {
-        carry = ( *O1 & 0x01 ) ? CARRY_FLAG : carry;
-        *O1 =  ( *O1 >> 1 ) & 0x7F;
-        zero = ( *O1 == 0x00 ) ? ZERO_FLAG : 0x00;
-    }
-    else {
-        uint16_t value = readU16( O1 );
-        carry = ( value & 0x0001 ) ? CARRY_FLAG : carry;
-        value =  ( value >> 1 ) & 0x7FFF;
-        zero = ( value == 0x00 ) ? ZERO_FLAG : 0x00;
-        storeU16( O1, value );
-    }
+static inline uint8_t LSR8( uint8_t O1 ) {
+    uint8_t zero = 0x00;
+    uint8_t carry = 0x00;
+
+    carry = ( O1 & 0x01 ) ? CARRY_FLAG : carry;
+    O1 =  ( O1 >> 1 ) & 0x7F;
+    zero = ( O1 == 0x00 ) ? ZERO_FLAG : 0x00;
+
     p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG | CARRY_FLAG ) )
         | zero | carry;
+
+    return O1;
+}
+
+static inline uint16_t LSR16( uint16_t O1 ) {
+    uint8_t zero = 0x00;
+    uint8_t carry = 0x00;
+
+    uint16_t value = O1;
+    carry = ( value & 0x0001 ) ? CARRY_FLAG : carry;
+    value =  ( value >> 1 ) & 0x7FFF;
+    zero = ( value == 0x00 ) ? ZERO_FLAG : 0x00;
+
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG | CARRY_FLAG ) )
+        | zero | carry;
+
+    return value;
+}
+
+static inline void LSRMem( MemoryAddress address ) {
+    if ( p_register & M_FLAG ) {
+        MainBusWriteU8( address, LSR8( MainBusReadU8( address ) ) );
+    }
+    else {
+        MainBusWriteU16( address, LSR16( MainBusReadU16( address ) ) );
+    }
 }
 
 ////LSR dp    46    Direct Page    N��ZC    2
 void f46_LSR(){
-    LSR( direct( 0 ) );
+    LSRMem( direct( 0 ) );
 }
 
 ////LSR A    4A    Accumulator    N��ZC    1
 void f4A_LSR(){
-    LSR( (uint8_t*)&accumulator );
+    if ( p_register & M_FLAG ) {
+        accumulator = ( accumulator & 0xFF00 ) | LSR8( (uint8_t)accumulator );
+    }
+    else {
+        accumulator = LSR16( accumulator );
+    }
 }
 
 ////LSR addr    4E    Absolute    N��ZC    3
 void f4E_LSR(){
-    LSR( absolute( 0 ) );
+    LSRMem( absolute( 0 ) );
 }
 
 ////LSR dp, X    56    DP Indexed, X    N��ZC    2
 void f56_LSR(){
-    LSR( direct( X ) );
+    LSRMem( direct( X ) );
 }
 
 ////LSR addr, X    5E    Absolute Indexed, X    N��ZC    3
 void f5E_LSR(){
-    LSR( absoluteIndexedX() );
+    LSRMem( absoluteIndexedX() );
 }
 #pragma endregion
 
@@ -1444,13 +1733,13 @@ void f54_MVN(){
     // TODO - m/x flags?
     // TODO - might be better to loop instead of memcpy
 
-    uint8_t destBank = *immediate();
-    uint8_t srcBank = *immediate();
+    uint8_t destBank = immediate();
+    uint8_t srcBank = immediate();
     DBR = destBank;
 
-    uint8_t *src = snesMemoryMap( GetBusAddress( srcBank, X ) );
-    uint8_t *dest = snesMemoryMap( GetBusAddress( destBank, Y ) );
-    *dest = *src;
+    MemoryAddress src = GetBusAddress( srcBank, X );
+    MemoryAddress dest = GetBusAddress( destBank, Y );
+    MainBusWriteU8( dest, MainBusReadU8( src ) );
     ++X;
     ++Y;
     --accumulator;
@@ -1466,17 +1755,20 @@ void f44_MVP(){
     // TODO - m/x flags?
     // TODO - might be better to loop instead of memcpy
 
-    uint8_t destBank = *immediate();
-    uint8_t srcBank = *immediate();
+    uint8_t destBank = immediate();
+    uint8_t srcBank = immediate();
     DBR = destBank;
-    
-    uint8_t *src = snesMemoryMap( GetBusAddress( srcBank, X ) );
-    uint8_t *dest = snesMemoryMap( GetBusAddress( destBank, Y ) );
-    uint16_t toMove = accumulator + 1;
-    memcpy( dest, src, toMove );
-    X -= toMove;
-    Y -= toMove;
-    accumulator = 0xFFFF;
+
+    MemoryAddress src = GetBusAddress( srcBank, X );
+    MemoryAddress dest = GetBusAddress( destBank, Y );
+    MainBusWriteU8( dest, MainBusReadU8( src ) );
+
+    --X;
+    --Y;
+    --accumulator;
+    if ( accumulator != 0xFFFF ) {
+        nextOperationOffset = currentOperationOffset;
+    }
 }
 
 ////NOP    EA    Implied        1
@@ -1485,100 +1777,118 @@ void fEA_NOP(){
 
 #pragma region ORA
 
-static inline void ORA( uint8_t *O1 ) {
-    uint16_t zero = 0x00;
-    uint16_t negative = 0x00;
-    if ( p_register & M_FLAG ) {
-        accumulator = ( accumulator & 0xFF00 ) | ( ( accumulator & 0x00FF ) | *O1 );
-        zero = ( ( accumulator & 0x00FF ) == 0 ) ? ZERO_FLAG : zero;
-        negative = ( accumulator & 0x0080 ) ? NEGATIVE_FLAG : zero;
-    }
-    else {
-        accumulator |= readU16( O1 );
-        zero = ( accumulator == 0 ) ? ZERO_FLAG : zero;
-        negative = ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : zero;
-    }
+static inline void ORA8( uint8_t O1 ) {
+    uint8_t zero = 0x00;
+    uint8_t negative = 0x00;
+
+    accumulator = ( accumulator & 0xFF00 ) | ( ( accumulator & 0x00FF ) | O1 );
+    zero = ( ( accumulator & 0x00FF ) == 0 ) ? ZERO_FLAG : zero;
+    negative = ( accumulator & 0x0080 ) ? NEGATIVE_FLAG : zero;
 
     p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG ) )
         | zero | negative;
 }
 
+static inline void ORA16( uint16_t O1 ) {
+    uint8_t zero = 0x00;
+    uint8_t negative = 0x00;
+    
+    accumulator |= O1;
+    zero = ( accumulator == 0 ) ? ZERO_FLAG : zero;
+    negative = ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : zero;
+
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG ) )
+        | zero | negative;
+}
+
+static inline void ORAMem( MemoryAddress address ) {
+    if ( p_register & M_FLAG ) {
+        ORA8( MainBusReadU8( address ) );
+    }
+    else {
+        ORA16( MainBusReadU16( address ) );
+    }
+}
+
 ////ORA(_dp, _X)    1    DP Indexed Indirect, X    N��Z - 2
 void f01_ORA(){
-    ORA( directIndexedXIndirect() );
+    ORAMem( directIndexedXIndirect() );
 }
 
 ////ORA sr, S    3    Stack Relative    N��Z - 2
 void f03_ORA(){
-    ORA( stackRelative() );
+    ORAMem( stackRelative() );
 }
 
 ////ORA dp    5    Direct Page    N��Z - 2
 void f05_ORA(){
-    ORA( direct( 0 ) );
+    ORAMem( direct( 0 ) );
 }
 
 ////ORA[_dp_]    7    DP Indirect Long    N��Z - 2
 void f07_ORA(){
-    ORA( directIndirectLong() );
+    ORAMem( directIndirectLong() );
 }
 
 ////ORA #const    9    Immediate    N��Z - 2
 void f09_ORA(){
     if ( !( p_register & M_FLAG ) ) {
+        ORA8( immediate() );
+    }
+    else {
+        ORA16( immediateU16() );
         ++nextOperationOffset;
     }
-    ORA( immediate() );   
 }
 
 ////ORA addr    0D    Absolute    N��Z - 3
 void f0D_ORA(){
-    ORA( absolute( 0 ) );
+    ORAMem( absolute( 0 ) );
 }
 
 ////ORA long    0F    Absolute Long    N��Z - 4
 void f0F_ORA(){
-    ORA( absoluteLong( 0 ) );
+    ORAMem( absoluteLong( 0 ) );
 }
 
 ////ORA(_dp_), Y    11    DP Indirect Indexed, Y    N��Z - 2
 void f11_ORA(){
-    ORA( directIndirectIndexedY( 0 ) );
+    ORAMem( directIndirectIndexedY( 0 ) );
 }
 
 ////ORA(_dp_)    12    DP Indirect    N��Z - 2
 void f12_ORA(){
-    ORA( directIndirect() );
+    ORAMem( directIndirect() );
 }
 
 ////ORA(_sr_, S), Y    13    SR Indirect Indexed, Y    N��Z - 2
 void f13_ORA(){
-    ORA( stackRelativeIndirectIndexedY() );
+    ORAMem( stackRelativeIndirectIndexedY() );
 }
 
 ////ORA dp, X    15    DP Indexed, X    N��Z - 2
 void f15_ORA(){
-    ORA( direct( X ) );
+    ORAMem( direct( X ) );
 }
 
 ////ORA[_dp_], Y    17    DP Indirect Long Indexed, Y    N��Z - 2
 void f17_ORA(){
-    ORA( directIndirectIndexedYLong() );
+    ORAMem( directIndirectIndexedYLong() );
 }
 
 ////ORA addr, Y    19    Absolute Indexed, Y    N��Z - 3
 void f19_ORA(){
-    ORA( absoluteIndexedY() );
+    ORAMem( absoluteIndexedY() );
 }
 
 ////ORA addr, X    1D    Absolute Indexed, X    N��Z - 3
 void f1D_ORA(){
-    ORA( absoluteIndexedX() );
+    ORAMem( absoluteIndexedX() );
 }
 
 ////ORA long, X    1F    Absolute Long Indexed, X    N��Z - 4
 void f1F_ORA(){
-    ORA( absoluteLongIndexedX() );
+    ORAMem( absoluteLongIndexedX() );
 }
 #pragma endregion
 
@@ -1586,20 +1896,18 @@ void f1F_ORA(){
 
 ////PEA addr    F4    Stack(Absolute)        3
 void fF4_PEA(){
-    pushU16( readU16( immediate() ) );
-    ++PC;
+    pushU16( immediateU16() );
 }
 
 ////PEI(dp)    D4    Stack(DP Indirect)        2
 void fD4_PEI(){
-    pushU16( readU16( direct( 0 ) ) );
+    pushU16( MainBusReadU16( direct( 0 ) ) );
 }
 
 ////PER label    62    Stack(PC Relative Long)        3
 void f62_PER(){
     // TODO - verify signed/unsigned appropriateness
-    pushU16( nextOperationOffset + (int16_t)readU16( immediate() ) );
-    ++PC;
+    pushU16( nextOperationOffset + (int16_t)immediateU16() );
 }
 
 ////PHA    48    Stack(Push)        1
@@ -1624,12 +1932,12 @@ void f0B_PHD(){
 
 ////PHK    4B    Stack(Push)        1
 void f4B_PHK(){
-    pushU8( (uint8_t) PBR );
+    pushU8( PBR );
 }
 
 ////PHP    8    Stack(Push)        1
 void f08_PHP(){
-    pushU16( (uint8_t) ( p_register & 0x00FF ) );
+    pushU16( p_register );
 }
 
 ////PHX    DA    Stack(Push)        1
@@ -1678,7 +1986,7 @@ void f68_PLA(){
 
 ////PLB    AB    Stack(Pull)    N��Z - 1
 void fAB_PLB(){
-    PL( (uint8_t*) &DBR, true );
+    PL( &DBR, true );
 }
 
 ////PLD    2B    Stack(Pull)    N��Z - 1
@@ -1688,7 +1996,7 @@ void f2B_PLD(){
 
 ////PLP    28    Stack(Pull)    N��Z - 1
 void f28_PLP(){
-    PL( (uint8_t*) &p_register, true );
+    PL( &p_register, true );
 }
 
 ////PLX    FA    Stack(Pull)    N��Z - 1
@@ -1704,102 +2012,145 @@ void f7A_PLY(){
 
 #pragma region rot
 
-static inline void ROL( uint8_t *O1 ) {
+static inline uint8_t ROL8( uint8_t O1 ) {
     uint16_t zero = 0x00;
     uint16_t negative = 0x00;
     uint16_t carry = 0x00;
 
-    if ( p_register & M_FLAG ) {
-        carry = ( *O1 & 0x80 ) ? CARRY_FLAG : carry;
-        *O1 = ( *O1 << 1 ) | ( ( p_register & CARRY_FLAG ) ? 0x01 : 0x00 );
-        negative = ( *O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
-        zero = ( *O1 == 0 ) ? ZERO_FLAG : zero;
-    }
-    else {
-        uint16_t value = readU16( O1 );
-        carry = ( value & 0x8000 ) ? CARRY_FLAG : carry;
-        value = ( value << 1 ) | ( ( p_register & CARRY_FLAG ) ? 0x01 : 0x00 );
-        negative = ( value & 0x8000 ) ? NEGATIVE_FLAG : negative;
-        zero = ( value == 0 ) ? ZERO_FLAG : zero;
-        storeU16( O1, value );
-    }
+    carry = ( O1 & 0x80 ) ? CARRY_FLAG : carry;
+    O1 = ( O1 << 1 ) | ( ( p_register & CARRY_FLAG ) ? 0x01 : 0x00 );
+    negative = ( O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
+    zero = ( O1 == 0 ) ? ZERO_FLAG : zero;
 
     p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG | CARRY_FLAG ) )
         | zero | negative | carry;
-}
 
-static inline void ROR( uint8_t *O1 ) {
+    return O1;
+}
+static inline uint16_t ROL16( uint16_t O1 ) {
     uint16_t zero = 0x00;
     uint16_t negative = 0x00;
     uint16_t carry = 0x00;
 
-    if ( p_register & M_FLAG ) {
-        carry = ( *O1 & 0x80 ) ? CARRY_FLAG : carry;
-        *O1 = ( *O1 >> 1 ) | ( ( p_register & CARRY_FLAG ) ? 0x80 : 0x00 );
-        negative = ( *O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
-        zero = ( *O1 == 0 ) ? ZERO_FLAG : zero;
-    }
-    else {
-        uint16_t value = readU16( O1 );
-        carry = ( value & 0x8000 ) ? CARRY_FLAG : carry;
-        value = ( value >> 1 ) | ( ( p_register & CARRY_FLAG ) ? 0x8000 : 0x00 );
-        negative = ( value & 0x8000 ) ? NEGATIVE_FLAG : negative;
-        zero = ( value == 0 ) ? ZERO_FLAG : zero;
-        storeU16( O1, value );
-    }
+    uint16_t value = O1;
+    carry = ( value & 0x8000 ) ? CARRY_FLAG : carry;
+    value = ( value << 1 ) | ( ( p_register & CARRY_FLAG ) ? 0x01 : 0x00 );
+    negative = ( value & 0x8000 ) ? NEGATIVE_FLAG : negative;
+    zero = ( value == 0 ) ? ZERO_FLAG : zero;
 
     p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG | CARRY_FLAG ) )
         | zero | negative | carry;
+
+    return value;
 }
+static inline void ROLMem( MemoryAddress address ) {
+    if ( p_register & M_FLAG ) {
+        MainBusWriteU8( address, ROL8( MainBusReadU8( address ) ) );
+    }
+    else {
+        MainBusWriteU16( address, ROL16( MainBusReadU16( address ) ) );
+    }
+}
+
+static inline uint8_t ROR8( uint8_t O1 ) {
+    uint8_t zero = 0x00;
+    uint8_t negative = 0x00;
+    uint8_t carry = 0x00;
+
+    carry = ( O1 & 0x80 ) ? CARRY_FLAG : carry;
+    O1 = ( O1 >> 1 ) | ( ( p_register & CARRY_FLAG ) ? 0x80 : 0x00 );
+    negative = ( O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
+    zero = ( O1 == 0 ) ? ZERO_FLAG : zero;
+
+    p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG | CARRY_FLAG ) )
+        | zero | negative | carry;
+
+    return O1;
+}
+static inline uint16_t ROR16( uint16_t O1 ) {
+    uint8_t zero = 0x00;
+    uint8_t negative = 0x00;
+    uint8_t carry = 0x00;
+
+    uint16_t value = O1;
+    carry = ( value & 0x8000 ) ? CARRY_FLAG : carry;
+    value = ( value >> 1 ) | ( ( p_register & CARRY_FLAG ) ? 0x8000 : 0x00 );
+    negative = ( value & 0x8000 ) ? NEGATIVE_FLAG : negative;
+    zero = ( value == 0 ) ? ZERO_FLAG : zero;
+
+    p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG | CARRY_FLAG ) )
+        | zero | negative | carry;
+
+    return value;
+}
+static inline void RORMem( MemoryAddress address ) {
+    if ( p_register & M_FLAG ) {
+        MainBusWriteU8( address, ROR8( MainBusReadU8( address ) ) );
+    }
+    else {
+        MainBusWriteU16( address, ROR16( MainBusReadU16( address ) ) );
+    }
+}
+
 
 ////ROL dp    26    Direct Page    N��ZC    2
 void f26_ROL(){
-    ROL( direct( 0 ) );
+    ROLMem( direct( 0 ) );
 }
 
 ////ROL A    2A    Accumulator    N��ZC    1
 void f2A_ROL(){
-    ROL( (uint8_t*)&accumulator );
+    if ( p_register & M_FLAG ) {
+        accumulator = ( accumulator & 0xFF00 ) | (uint16_t)ROL8( (uint8_t)accumulator  );
+    }
+    else {
+        ROL16( accumulator  );
+    }
 }
 
 ////ROL addr    2E    Absolute    N��ZC    3
 void f2E_ROL(){
-    ROL( absolute( 0 ) );
+    ROLMem( absolute( 0 ) );
 }
 
 ////ROL dp, X    36    DP Indexed, X    N��ZC    2
 void f36_ROL(){
-    ROL( direct( X ) );
+    ROLMem( direct( X ) );
 }
 
 ////ROL addr, X    3E    Absolute Indexed, X    N��ZC    3
 void f3E_ROL(){
-    ROL( absoluteIndexedX() );
+    ROLMem( absoluteIndexedX() );
 }
 
 ////ROR dp    66    Direct Page    N��ZC    2
 void f66_ROR(){
-    ROR( direct( 0 ) );
+    RORMem( direct( 0 ) );
 }
 
 ////ROR A    6A    Accumulator    N��ZC    1
 void f6A_ROR(){
-    ROR( (uint8_t*)&accumulator );
+    if ( p_register & M_FLAG ) {
+        ROR8( (uint8_t) accumulator  );
+    }
+    else {
+        ROR16( accumulator  );
+    }
 }
 
 ////ROR addr    6E    Absolute    N��ZC    3
 void f6E_ROR(){
-    ROR( absolute( 0 ) );
+    RORMem( absolute( 0 ) );
 }
 
 ////ROR dp, X    76    DP Indexed, X    N��ZC    2
 void f76_ROR(){
-    ROR( direct( X ) );
+    RORMem( direct( X ) );
 }
 
 ////ROR addr, X    7E    Absolute Indexed, X    N��ZC    3
 void f7E_ROR(){
-    ROR( absoluteIndexedX() );
+    RORMem( absoluteIndexedX() );
 }
 
 #pragma endregion
@@ -1832,136 +2183,148 @@ void f60_RTS(){
 #pragma endregion
 
 #pragma region SBC
-static inline void SBC( uint8_t *O1 ) {
+static inline void SBC8( uint8_t O1 ) {
     // TODO - Implement this properly (set carry, overflow, do BCD)
     uint8_t carry = ( p_register & CARRY_FLAG ) ? 0x00 : 0x01;
-    uint16_t negative = 0x00;
-    uint16_t overflow = 0x00;
-    uint16_t zero = 0x00;
+    uint8_t negative = 0x00;
+    uint8_t overflow = 0x00;
+    uint8_t zero = 0x00;
 
-    if ( p_register & M_FLAG ) {
-        uint8_t value = *O1;
-        uint8_t accValue = (uint8_t) ( accumulator & 0x00FF );
-        uint8_t result = 0x00;
-        
-        if ( p_register & DECIMAL_FLAG ) {
-
-        }
-        else {
-            result = accValue - value - carry;
-        }
-
-        accumulator = ( accumulator & 0xFF00 ) | (uint16_t) value;
-        negative = ( value & 0x80 ) ? NEGATIVE_FLAG : 0x00;
-        zero = ( value == 0x00 ) ? ZERO_FLAG : 0x00;
-        *O1 = result;
+    uint8_t value = O1;
+    uint8_t accValue = (uint8_t) ( accumulator & 0x00FF );
+    uint8_t result = 0x00;
+    
+    if ( p_register & DECIMAL_FLAG ) {
+        // TODO
     }
     else {
-        uint16_t value = readU16( O1 );
-        uint16_t result = 0x00;
-
-        if ( p_register & DECIMAL_FLAG ) {
-
-        }
-        else {
-            result = accumulator - value - carry;
-        }
-
-        accumulator = result;
-        negative = ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : 0x00;
-        zero = ( accumulator == 0x00 ) ? ZERO_FLAG : 0x00;
-        storeU16( O1, result );
+        result = accValue - value - carry;
     }
+    accumulator = ( accumulator & 0xFF00 ) | (uint16_t) value;
+    negative = ( value & 0x80 ) ? NEGATIVE_FLAG : 0x00;
+    zero = ( value == 0x00 ) ? ZERO_FLAG : 0x00;
 
     p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG | OVERFLOW_FLAG ) )
         | zero | negative | overflow;
 }
+static inline void SBC16( uint16_t O1 ) {
+    // TODO - Implement this properly (set carry, overflow, do BCD)
+    uint8_t carry = ( p_register & CARRY_FLAG ) ? 0x00 : 0x01;
+    uint8_t negative = 0x00;
+    uint8_t overflow = 0x00;
+    uint8_t zero = 0x00;
+
+    uint16_t value = O1;
+    uint16_t result = 0x00;
+    if ( p_register & DECIMAL_FLAG ) {
+        // TODO
+    }
+    else {
+        result = accumulator - value - carry;
+    }
+    accumulator = result;
+    negative = ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : 0x00;
+    zero = ( accumulator == 0x00 ) ? ZERO_FLAG : 0x00;
+
+    p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG | OVERFLOW_FLAG ) )
+        | zero | negative | overflow;
+}
+static inline void SBCMem( MemoryAddress address ) {
+    if ( p_register & M_FLAG ) {
+        SBC8( MainBusReadU8( address ) );
+    }
+    else {
+        SBC16( MainBusReadU16( address ) );
+    }
+}
 
 ////SBC(_dp, _X)    E1    DP Indexed Indirect, X    NV� - ZC    2
 void fE1_SBC(){
-    SBC( directIndexedXIndirect() );
+    SBCMem( directIndexedXIndirect() );
 
 }
 
 ////SBC sr, S    E3    Stack Relative    NV� - ZC    2
 void fE3_SBC(){
-    SBC( stackRelative() );
+    SBCMem( stackRelative() );
 }
 
 ////SBC dp    E5    Direct Page    NV� - ZC    2
 void fE5_SBC(){
-    SBC( direct( 0 ) );
+    SBCMem( direct( 0 ) );
 }
 
 ////SBC[_dp_]    E7    DP Indirect Long    NV� - ZC    2
 void fE7_SBC(){
-    SBC( directIndirectLong() );
+    SBCMem( directIndirectLong() );
 }
 
 ////SBC #const    E9    Immediate    NV� - ZC    2
 void fE9_SBC(){
-    if ( !( p_register & M_FLAG ) ) {
+    if ( p_register & M_FLAG ) {
+        SBC8( immediate() );
+    }
+    else {
+        SBC16( immediateU16() );
         ++nextOperationOffset;
     }
-    SBC( immediate() );
 }
 
 ////SBC addr    ED    Absolute    NV� - ZC    3
 void fED_SBC(){
-    SBC( absolute( 0 ) );
+    SBCMem( absolute( 0 ) );
 }
 
 ////SBC long    EF    Absolute Long    NV� - ZC    4
 void fEF_SBC(){
-    SBC( absoluteLong( 0 ) );
+    SBCMem( absoluteLong( 0 ) );
 }
 
 ////SBC(_dp_), Y    F1    DP Indirect Indexed, Y    NV� - ZC    2
 void fF1_SBC(){
-    SBC( directIndirectIndexedY() );
+    SBCMem( directIndirectIndexedY() );
 }
 
 ////SBC(_dp_)    F2    DP Indirect    NV� - ZC    2
 void fF2_SBC(){
-    SBC( directIndirect() );
+    SBCMem( directIndirect() );
 }
 
 ////SBC(_sr_, S), Y    F3    SR Indirect Indexed, Y    NV� - ZC    2
 void fF3_SBC(){
-    SBC( stackRelativeIndirectIndexedY() );
+    SBCMem( stackRelativeIndirectIndexedY() );
 }
 
 ////SBC dp, X    F5    DP Indexed, X    NV� - ZC    2
 void fF5_SBC(){
-    SBC( direct( X  ) );
+    SBCMem( direct( X  ) );
 }
 
 ////SBC[_dp_], Y    F7    DP Indirect Long Indexed, Y    NV� - ZC    2
 void fF7_SBC(){
-    SBC( directIndirectIndexedYLong() );
+    SBCMem( directIndirectIndexedYLong() );
 }
 
 ////SBC addr, Y    F9    Absolute Indexed, Y    NV� - ZC    3
 void fF9_SBC(){
-    SBC( absoluteIndexedY() );
+    SBCMem( absoluteIndexedY() );
 }
 
 ////SBC addr, X    FD    Absolute Indexed, X    NV� - ZC    3
 void fFD_SBC(){
-    SBC( absoluteIndexedX() );
+    SBCMem( absoluteIndexedX() );
 }
 
 ////SBC long, X    FF    Absolute Long Indexed, X    NV� - ZC    4
 void fFF_SBC(){
-    SBC( absoluteLongIndexedX() );
+    SBCMem( absoluteLongIndexedX() );
 }
 #pragma endregion
 
 #pragma region p_register
 ////REP #const    C2    Immediate    NVMXDIZC    2
 void fC2_REP() {
-    uint8_t operand = *immediate();
-    p_register &= ~operand;
+    p_register &= ~immediate();
 }
 
 ////SEC    38    Implied    �� - C    1
@@ -1981,7 +2344,7 @@ void f78_SEI(){
 
 ////SEP    E2    Immediate    NVMXDIZC    2
 void fE2_SEP(){
-    uint8_t operand = *immediate();
+    uint8_t operand = immediate();
     p_register |= operand;
     if ( operand & X_FLAG ) {
         // Ground truth doesn't clear high-byte, so comment out for now
@@ -1993,14 +2356,15 @@ void fE2_SEP(){
 
 #pragma region store
 
-static inline void STA( uint8_t *O1 ) {
+static inline void STA( MemoryAddress address ) {
     if ( p_register & M_FLAG ) {
-        *O1 = (uint8_t)( accumulator & 0x00FF );
+        MainBusWriteU8( address, (uint8_t)( accumulator & 0x00FF ) );
     }
     else {
-        storeU16( O1, accumulator );
+        MainBusWriteU16( address, accumulator );
     }
 }
+
 
 ////STA(_dp, _X)    81    DP Indexed Indirect, X        2
 void f81_STA(){
@@ -2072,12 +2436,12 @@ void f9F_STA(){
     STA( absoluteLongIndexedX() );
 }
 
-static inline void STN( uint16_t registerValue, uint8_t *O1 ) {
+static inline void STN( uint16_t registerValue, MemoryAddress address ) {
     if ( p_register & X_FLAG ) {
-        *O1 = (uint8_t)( registerValue & 0x00FF );
+        MainBusWriteU8( address, (uint8_t)( registerValue & 0x00FF ) );
     }
     else {
-        storeU16( O1, registerValue );
+        MainBusWriteU16( address, registerValue );
     }
 }
 
@@ -2111,41 +2475,52 @@ void f94_STY(){
     STN( Y, direct( X ) );
 }
 
+static inline void STZMem( MemoryAddress address ) {
+    if ( p_register & M_FLAG ) {
+        MainBusWriteU8( address, 0 );
+    }
+    else {
+        MainBusWriteU16( address, 0 );
+    }
+}
+
 ////STZ dp    64    Direct Page        2
 void f64_STZ(){
-    STN( 0, direct( 0 ) );
+    STZMem( direct( 0 ) );
 }
 
 ////STZ dp, X    74    DP Indexed, X        2
 void f74_STZ(){
-    STN( 0, direct( X ) );
+    STZMem( direct( X ) );
 }
 
 ////STZ addr    9C    Absolute        3
 void f9C_STZ(){
-    STN( 0, absolute( 0 ) );
+    STZMem( absolute( 0 ) );
 }
 
 ////STZ addr, X    9E    Absolute Indexed, X        3
 void f9E_STZ(){
-    STN( 0, absoluteIndexedX() );
+    STZMem( absoluteIndexedX() );
 }
 
 #pragma endregion
 
 #pragma region test_reset
 
-static inline void TRB( uint8_t *O1 ) {
+static inline void TRB( MemoryAddress address ) {
     uint16_t zero = ZERO_FLAG;
     if ( p_register & M_FLAG ) {
-        *O1 &= ~( (uint8_t)( accumulator & 0x00FF ) );
-        zero = ( *O1 == 0 ) ? ZERO_FLAG : 0x00;
+        uint8_t value = MainBusReadU8( address );
+        value &= ~( (uint8_t)( accumulator & 0x00FF ) );
+        zero = ( value == 0 ) ? ZERO_FLAG : 0x00;
+        MainBusWriteU8( address, value );
     }
     else {
-        uint16_t value = readU16( O1 );
+        uint16_t value = MainBusReadU16( address );
         value &= ~accumulator;
         zero = ( value == 0 ) ? ZERO_FLAG : 0x00;
-        storeU16( O1, value );
+        MainBusWriteU16( address, value );
     }
 
     p_register = ( p_register & ~ZERO_FLAG ) | zero;
@@ -2161,18 +2536,20 @@ void f1C_TRB(){
     TRB( absolute( 0 ) );
 }
 
-static inline void TSB( uint8_t *O1 ) {
+static inline void TSB( MemoryAddress address ) {
     uint16_t zero = ZERO_FLAG;
     if ( p_register & M_FLAG ) {
         uint8_t accVal = (uint8_t)( accumulator & 0x00FF );
-        *O1 |= accVal;
-        zero = ( ( accVal & *O1 ) == 0 ) ? ZERO_FLAG : 0x00;
+        uint8_t value = MainBusReadU8( address );
+        value |= accVal;
+        zero = ( ( accVal & value ) == 0 ) ? ZERO_FLAG : 0x00;
+        MainBusWriteU8( address, value );
     }
     else {
-        uint16_t value = readU16( O1 );
+        uint16_t value = MainBusReadU16( address );
         value |= accumulator;
         zero = ( ( value & accumulator ) == 0 ) ? ZERO_FLAG : 0x00;
-        storeU16( O1, value );
+        MainBusWriteU16( address, value );
     }
 
     p_register = ( p_register & ~ZERO_FLAG ) | zero;

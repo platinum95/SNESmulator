@@ -27,7 +27,7 @@ int startup();
 void begin_execution();
 
 // Get a pointer to host memory equivalent to emulated-memory address
-uint8_t* snesMemoryMap( MemoryAddress address );
+void snesMemoryMap( MemoryAddress addressBus, uint8_t *dataBus, bool writeLine );
 
 // SNES (both main CPU and SPC700) is little-endian, MSB at highest address.
 // On little-endian hosts, we can just treat the memory as-is.

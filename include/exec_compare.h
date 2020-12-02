@@ -14,5 +14,19 @@ typedef struct ExecutionState {
     bool emulationMode;
 } ExecutionState;
 
+typedef enum ComparisonResult {
+    Match = 0,
+    ProgramBankMismatch = 1 << 0,
+    ProgramCounterMismatch = 1 << 1,
+    AccumulatorMismatch = 1 << 2,
+    XMismatch = 1 << 3,
+    YMismatch = 1 << 4,
+    EmulationModeMismatch = 1 << 5,
+    PRegisterMismatch = 1 << 6,
+    StackPointerMismatch = 1 << 7,
+    DataBankMismatch = 1 << 8,
+    DirectPageMismatch = 1 << 9
+} ComparisonResult;
+
 int start_comp();
-uint8_t compare( struct ExecutionState A );
+ComparisonResult compare( struct ExecutionState A );

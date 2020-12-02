@@ -74,41 +74,43 @@ void cycle() {
     }
 }
 
-uint8_t *accessAddressFromBank_loRom( MemoryAddress address ) {
+// TODO - loRom mapping
+void accessAddressFromBank_loRom( MemoryAddress address, uint8_t *dataBus, bool writeLine ) {
+    uint8_t *hostAddress = NULL;
     if ( address.bank <= 0x3F ) {
         //Shadow ram
         if ( address.offset <= 0x1FFF ) {
             int shadow_addr = 0;
             shadow_addr = shadow_addr | address.offset;
-            return &system_memory[shadow_addr];
+            hostAddress = &system_memory[shadow_addr];
         }
         //Hardware addresses
         else if ( address.offset <= 0x5FFF ) {
-            return &hardware_registers[ address.offset ];
+            hostAddress = &hardware_registers[ address.offset ];
         }
         //Expansion ram
         else if ( address.offset <= 0x7FFF ) {
-            return 0;
+            hostAddress = NULL;
         }
         //Rom mapping
         else {
             int romIndex = ( address.bank * 0x7FFF ) + address.offset;
-            return &emulatedCartridge.rom[ romIndex ];
+            hostAddress = &emulatedCartridge.rom[ romIndex ];
         }
     }
     //Further rom mapping
     else if ( address.bank <= 0x7C ) {
         int romIndex = (0x3F * 0x7FFF) + ((address.bank * 0xFFFF) + address.offset);
-        return &emulatedCartridge.rom[romIndex];
+        hostAddress = &emulatedCartridge.rom[romIndex];
     }
     //Sram
     else if ( address.bank == 0x7D ) {
-        return &emulatedCartridge.sram[address.offset];
+        hostAddress = &emulatedCartridge.sram[address.offset];
     }
     //System ram
     else if ( address.bank <= 0x7F ) {
         int ram_addr = (address.bank - 0x7E) * 0xFFFF + address.offset;
-        return &system_memory[ram_addr];
+        hostAddress = &system_memory[ram_addr];
     }
     //Fast rom
     else {
@@ -117,41 +119,51 @@ uint8_t *accessAddressFromBank_loRom( MemoryAddress address ) {
         else
         {
             address.bank -= 0x80;
-            return accessAddressFromBank_loRom( address );
+            accessAddressFromBank_loRom( address, dataBus, writeLine );
+            return;
         }
     }
 
-    return NULL;
+    if ( hostAddress == NULL ) {
+        hostAddress = &open_bus;
+    }
+    else {
+        open_bus = *hostAddress;
+    }
+
+    if ( writeLine ) {
+        *hostAddress = *dataBus;
+    }
+    else {
+        *dataBus = *hostAddress;
+    }
 }
 
-#include <stdio.h>
-
-uint8_t *accessAddressFromBank_hiRom( MemoryAddress address ) {
-    if ( ( address.bank == 82 || address.bank == 2 || address.bank == 0x7e ) && address.offset == 0 ){
-        printf( "bloop" );
-    }
+void accessAddressFromBank_hiRom( MemoryAddress address, uint8_t *dataBus, bool writeLine ) {
+    uint8_t *hostAddress = NULL;
     if ( address.bank <= 0x3F ) {
         //Shadow ram
         if ( address.offset <= 0x1FFF ) {
-            int shadow_addr = 0;
-            shadow_addr = shadow_addr | address.offset;
-            return &system_memory[shadow_addr];
+            hostAddress = &system_memory[ address.offset ];
         }
         //Hardware addresses
         else if (address.offset <= 0x5FFF ) {
-            if ( address.offset >= 0x2140 && address.offset < 0x2144 )
-                return accessSpcComPort( address.offset - 0x2140, true ); // TODO
-            else
-                return &hardware_registers[ address.offset ];
+            if ( address.offset >= 0x2140 && address.offset < 0x2144 ) {
+                accessSpcComPort( address.offset - 0x2140, dataBus, writeLine ); // TODO
+                return;
+            }
+            else {
+                hostAddress = &hardware_registers[ address.offset ];
+            }
         }
         //sram
         else if ( address.offset <= 0x7FFF ) {
             const uint16_t relative_offset = address.offset - 0x6000;
             if( address.bank <= 0x1F ){
-                return &reserved_memory[ relative_offset ];
+                hostAddress = &reserved_memory[ relative_offset ];
             } else {
                 int sramIndex = (address.bank * 0x1FFF) + relative_offset;
-                return &emulatedCartridge.rom[ sramIndex ];
+                hostAddress = &emulatedCartridge.rom[ sramIndex ];
             }
         }
         //Rom mapping
@@ -162,18 +174,20 @@ uint8_t *accessAddressFromBank_hiRom( MemoryAddress address ) {
             uint32_t instruction_addr = getMappedInstructionAddr( address.bank, address.offset );
             instruction_addr &= ~0x800000;
             // TODO - add request function to Cartridge source
-            return &emulatedCartridge.rom[ instruction_addr ];
+            hostAddress = &emulatedCartridge.rom[ instruction_addr ];
         }
     }
     //Further rom mapping
     else if ( address.bank <= 0x7D ) {
-        int romIndex =  (((address.bank- 0x40) * 0x10000) + address.offset);
-        return &emulatedCartridge.rom[romIndex];
+        uint8_t romBank = address.bank - 0x40;
+        uint16_t romOffset = address.offset;
+        uint32_t romIndex = ( romBank << 16 ) + romOffset;
+        hostAddress = &emulatedCartridge.rom[ romIndex ];
     }
     //System ram
     else if ( address.bank <= 0x7F ) {
         int ram_addr = (address.bank - 0x7E) * 0xFFFF + address.offset -1;
-        return &system_memory[ram_addr];
+        hostAddress = &system_memory[ram_addr];
     }
     //Fast rom
     else if ( address.bank <= 0xFD ) {
@@ -185,7 +199,8 @@ uint8_t *accessAddressFromBank_hiRom( MemoryAddress address ) {
         }
         else    
         */
-        return accessAddressFromBank_hiRom( address );
+        accessAddressFromBank_hiRom( address, dataBus, writeLine );
+        return;
     }
     //Last bt of rom
     else {
@@ -194,29 +209,32 @@ uint8_t *accessAddressFromBank_hiRom( MemoryAddress address ) {
         else {
             int romIndex = (0x3D * 0xFFFF) + (((address.bank-0xFE) * 0xFFFF) + address.offset);
             // TODO - add request function to Cartridge source
-            return &emulatedCartridge.rom[romIndex];
+            hostAddress = &emulatedCartridge.rom[ romIndex ];
         }
     }
-    return NULL;
-}
 
-uint8_t* snesMemoryMap( MemoryAddress address ) {
-    uint8_t *dataloc;
-
-    // TODO - consider re-pointerifying this function
-    if( emulatedCartridge.romType == LoRom ) {
-        dataloc = accessAddressFromBank_loRom( address );
+    if ( hostAddress == NULL ) {
+        hostAddress = &open_bus;
     }
     else {
-        dataloc = accessAddressFromBank_hiRom( address );
+        open_bus = *hostAddress;
     }
 
-    if ( dataloc == NULL ) {
-        return &open_bus;
+    if ( writeLine ) {
+        *hostAddress = *dataBus;
     }
+    else {
+        *dataBus = *hostAddress;
+    }
+}
 
-    open_bus = *dataloc;
-    return dataloc;
-
+void snesMemoryMap( MemoryAddress address, uint8_t *dataBus, bool writeLine ) {
+    // TODO - consider re-pointerifying this function
+    if( emulatedCartridge.romType == LoRom ) {
+        accessAddressFromBank_loRom( address, dataBus, writeLine );
+    }
+    else {
+        accessAddressFromBank_hiRom( address, dataBus, writeLine );
+    }
 }
 
