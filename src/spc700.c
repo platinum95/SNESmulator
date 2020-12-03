@@ -5,6 +5,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -113,15 +114,16 @@ static uint8_t IPL_ROM[ 64 ] = {
 static uint32_t timerClockCounter = 0;
 static uint8_t controlRegisterState = 0;
 static uint8_t timersStage2[ 3 ];
+static bool t0Enabled = false;
+static bool t1Enabled = false;
+static bool t2Enabled = false;
 
 // TODO - overhaul with better handling
 static inline void updateTimers() {
     // SPC @ 1000KHz
     // T0 and T1 @ 8KHz = 125 CPU cycles per tick
     // T2 @ 64KHz = ~16 CPU cycles per tick
-    bool t0Enabled = registers->control & 0x01;
-    bool t1Enabled = registers->control & 0x02;
-    bool t2Enabled = registers->control & 0x04;
+
 
     if ( t0Enabled && !( controlRegisterState & 0x01 ) ) {
         // Zero Timer 0
@@ -182,18 +184,14 @@ void spc700_execute_next_instruction() {
     SPC700InstructionEntry *entry = &instructions[ opcode ];
     opCycles = entry->opCycles;
     next_program_counter = curr_program_counter + entry->opLength;
+    if ( curr_program_counter == 0x086a ) {
+        printf( "Debug break!\n" );
+    }
     entry->instruction();
     // Operation may mutate next_program_counter if it branches/jumps
     PC = next_program_counter;
 
     updateTimers();
-    controlRegisterState = registers->control;
-    if ( controlRegisterState & 0x40 ) {
-        // Zero out f4/f5
-    }
-    if ( controlRegisterState & 0x20 ) {
-        // Zero out f6/f7
-    }
 }
 
 /* Access the 4 visible bytes from the CPU */
@@ -209,7 +207,6 @@ void accessSpcComPort( uint8_t port, uint8_t *dataBus, bool writeLine ) {
         *dataBus = *( ( &registers->port0 ) + port );
     }
 }
-
 
 /* 16 bit "register" from A and Y registers */
 static inline uint16_t getYA() {
@@ -228,12 +225,43 @@ static inline void spcRegisterAccess( uint16_t addressBus, uint8_t *dataBus, boo
     if ( addressBus == 0xF0 ) {
         // Undocumented
         // TODO
+        printf( "Accessing TEST register\n" );
         hostAddress = &APUMemory[ addressBus ];
     }
     else if ( addressBus == 0xF1 ) {
         // Control register
-        // TODO
-        hostAddress = &APUMemory[ addressBus ];
+        if ( !writeLine ) {
+            // TODO - error
+            printf( "Attempting to read from control register\n" );
+            *dataBus = 0x00;
+            return;
+        }
+        // TODO - race conditions
+        uint8_t val = *dataBus;
+        if ( val & 0x80 ) {
+            // READ IPL region goes to ROM
+            // TODO
+        }
+        else {
+            // READ IPL region goes to RAM
+            // TODO
+        }
+        if ( val & 0x20 ) {
+            // Clear PC32
+            CPUWriteComPorts[ 3 ] = CPUWriteComPorts[ 2 ] = 0x00;
+        }
+        if ( val & 0x10 ) {
+            // Clear PC10
+            CPUWriteComPorts[ 1 ] = CPUWriteComPorts[ 0 ] = 0x00;
+        }
+        // Reset all timers
+        timersStage2[ 0 ] = timersStage2[ 1 ] = timersStage2[ 2 ] = 0x00;
+
+        t2Enabled = val & 0x04;
+        t1Enabled = val & 0x02;
+        t0Enabled = val & 0x01;
+        
+        return;
     }
     else if ( addressBus <= 0xF3 ) {
         if ( addressBus == 0x0F2 ) {

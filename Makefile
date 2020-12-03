@@ -1,7 +1,7 @@
 CC		    = gcc
 INCLUDES    = -I$(PWD)/include -I$(PWD)/CMore/
 CFLAGS	    = $(INCLUDES) -Wno-unknown-pragmas -MMD -O0 -g -Wall -Werror -Wextra -Wformat=2 -Wshadow -pedantic -Werror=vla -march=native -Wno-unused-variable -Wno-unused-but-set-variable
-LIBS		= -lopenal
+LIBS		= -lportaudio
 
 DEFINES	 =
 DEFINES	:=

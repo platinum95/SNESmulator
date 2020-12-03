@@ -4,8 +4,43 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include <AL/al.h>
-#include <AL/alc.h>
+#include <portaudio.h>
+
+
+static const char* voiceNameLookup[ 0xA ] = {
+    "VOL (L)",
+    "VOL (R)",
+    "P (L)",
+    "P (H)",
+    "SRCN",
+    "ADSR (1)",
+    "ADSR (2)",
+    "GAIN",
+    "ENVX",
+    "OUTX"
+};
+
+static const char* lowerCNameLookup[ 0x8 ] = {
+    "MVOL (L)",
+    "MVOL (R)",
+    "EVOL (L)",
+    "EVOL (R)",
+    "KON",
+    "KOFF",
+    "FLG",
+    "ENDX"
+};
+
+static const char* lowerDNameLookup[ 0x8 ] = {
+    "EFB",
+    "N/A (ERROR)",
+    "PMON",
+    "NON",
+    "EON",
+    "DIR",
+    "ESA",
+    "EDL"
+};
 
 typedef struct __attribute__((__packed__)) VoiceRegisters {
     int8_t VOL_L;
@@ -79,73 +114,8 @@ typedef struct __attribute__((__packed__)) Registers {
 
 static Registers registers;
 
-// KEY States
-#define KEY_STATE_ALL_OFF   0x00
-#define KEY_STATE_KON       0x02
-#define KEY_STATE_KON_KOFF  0x03
-#define KEY_STATE_KOF       0x01
-
-typedef struct VoiceState {
-    ALuint voiceSource;
-    ALuint audioBuffers[ 3 ]; // 2 lead-in buffers, 1 loop buffer
-    bool endxSet;
-    uint8_t currentState;
-    bool playing;
-    bool playingLoop;
-} VoiceState;
-
-typedef struct DspState {
-    VoiceState voiceStates[ 8 ];
-} DspState;
-
-static DspState dspState;
 
 static uint8_t dspAddressLatch;
-
-void accessDspAddressLatch( uint8_t *dataBus, bool writeLine ) {
-    // TODO - maybe add a LIKELY tag here
-    if ( writeLine ) {
-        dspAddressLatch = *dataBus;
-    }
-    else {
-        *dataBus = dspAddressLatch;
-    }
-}
-
-static const char* voiceNameLookup[ 0xA ] = {
-    "VOL (L)",
-    "VOL (R)",
-    "P (L)",
-    "P (H)",
-    "SRCN",
-    "ADSR (1)",
-    "ADSR (2)",
-    "GAIN",
-    "ENVX",
-    "OUTX"
-};
-
-static const char* lowerCNameLookup[ 0x8 ] = {
-    "MVOL (L)",
-    "MVOL (R)",
-    "EVOL (L)",
-    "EVOL (R)",
-    "KON",
-    "KOFF",
-    "FLG",
-    "ENDX"
-};
-
-static const char* lowerDNameLookup[ 0x8 ] = {
-    "EFB",
-    "N/A (ERROR)",
-    "PMON",
-    "NON",
-    "EON",
-    "DIR",
-    "ESA",
-    "EDL"
-};
 
 static inline void printAccess( uint8_t *dataBus, bool writeLine ) {
     uint8_t *hostMemory = ( (uint8_t*) &registers ) + dspAddressLatch;
@@ -177,7 +147,54 @@ static inline void printAccess( uint8_t *dataBus, bool writeLine ) {
         printf( "-- ERROR" );
     }
 
+    if ( dspAddressLatch == 0x4C && *dataBus != 0 && writeLine ) {
+        printf( "bloop\n" );
+    }
+
     printf( "\n" );
+}
+
+
+// KEY States
+#define KEY_STATE_ALL_OFF   0x00
+#define KEY_STATE_KON       0x02
+#define KEY_STATE_KON_KOFF  0x03
+#define KEY_STATE_KOF       0x01
+
+typedef struct VoiceData {
+    bool leadinLoopFlag;
+    bool loopLoopFlag;
+    uint16_t numLeadinBlocks;
+    uint16_t numLoopBlocks;
+    int16_t *leadinSamples;
+    int16_t *loopSamples;
+} VoiceData;
+
+typedef struct VoiceState {
+    bool endxSet;
+    uint8_t currentState;
+    bool playing;
+
+    uint16_t currentBlock;
+    uint8_t currentSample;
+    VoiceData voiceData;
+} VoiceState;
+
+typedef struct DspState {
+    VoiceState voiceStates[ 8 ];
+} DspState;
+
+static DspState dspState;
+
+
+void accessDspAddressLatch( uint8_t *dataBus, bool writeLine ) {
+    // TODO - maybe add a LIKELY tag here
+    if ( writeLine ) {
+        dspAddressLatch = *dataBus;
+    }
+    else {
+        *dataBus = dspAddressLatch;
+    }
 }
 
 void accessDspRegister( uint8_t *dataBus, bool writeLine ) {
@@ -199,6 +216,11 @@ void accessDspRegister( uint8_t *dataBus, bool writeLine ) {
 
     return;
 }
+static PaStream *portAudioStream;
+
+int portAudioStreamCallback( const void *input, void *output, unsigned long frameCount,
+                             const PaStreamCallbackTimeInfo* timeInfo,
+                             PaStreamCallbackFlags statusFlags, void *userData );
 
 void dspInitialise() {
     memset( &registers, 0x00, sizeof( Registers ) );
@@ -206,29 +228,31 @@ void dspInitialise() {
     registers.FLG = ( 1 << 7 ) | ( 1 << 6 ); // Reset, Mute
     dspAddressLatch = 0x00;
 
-    // Setup openAL
-    ALCdevice *openAlDevice = alcOpenDevice( NULL );
-    if ( !openAlDevice ) {
-        printf( "Failed to set up openAl device\n" );
+    if ( Pa_Initialize() != paNoError ) {
+        printf( "Failed to initialise PortAudio\n" );
     }
 
-    ALCcontext *openAlContext = alcCreateContext( openAlDevice, NULL );
-    if( !openAlContext ) {
-        printf( "Failed to set up OpenAL Context\n" );
+    if ( Pa_OpenDefaultStream( &portAudioStream, 0, 2, paInt16, 32000, 1, portAudioStreamCallback, NULL ) != paNoError ) {
+        printf( "Failed to open PortAudio stream\n" );
     }
 
-    ALCboolean contextMadeCurrent = alcMakeContextCurrent( openAlContext );
-    if( contextMadeCurrent != ALC_TRUE ) {
-        printf( "Failed to make OpenAL Context current\n" );
+    if ( Pa_StartStream( portAudioStream ) != paNoError ) {
+        printf( "Failed to start PortAudio stream\n" );
     }
+
 
     for( uint8_t i = 0; i < 8; ++i ) {
-       // alGenBuffers( 3, dspState.voiceStates[ i ].audioBuffers );
-       // alGenSources( 1, &dspState.voiceStates[ i ].voiceSource );
         dspState.voiceStates[ i ].endxSet = false;
         dspState.voiceStates[ i ].currentState = KEY_STATE_ALL_OFF;
         dspState.voiceStates[ i ].playing = false;
-        dspState.voiceStates[ i ].playingLoop = false;
+        dspState.voiceStates[ i ].voiceData.leadinSamples = NULL;
+        dspState.voiceStates[ i ].voiceData.loopSamples = NULL;
+        dspState.voiceStates[ i ].voiceData.leadinLoopFlag = false;
+        dspState.voiceStates[ i ].voiceData.loopLoopFlag = false;
+        dspState.voiceStates[ i ].voiceData.numLeadinBlocks = 0;
+        dspState.voiceStates[ i ].voiceData.numLoopBlocks = 0;
+        dspState.voiceStates[ i ].currentBlock = 0;
+        dspState.voiceStates[ i ].currentSample = 0;
     }
 
 }
@@ -314,51 +338,104 @@ static inline void loadVoiceBuffer( uint8_t voiceId ) {
     VoiceRegisters *voice = (VoiceRegisters*)( ( (uint8_t*) &registers ) + ( voiceId * 0x10 ) );
     const uint16_t sampleDirectoryAddr = registers.DIR * 0x0100;
 
+    bool adsrEnable = voice->ADSR1 & 0x80;
+    uint8_t decayRate = voice->ADSR1 & 0x0F;
+    uint8_t attackRate = ( voice->ADSR1 >> 4 ) & 0x07;
+    uint8_t sustainRate = voice->ADSR2 & 0x1F;
+    uint8_t sustainLevel = ( voice->ADSR2 >> 5 ) & 0x07;
+
+    uint8_t gainParameter;
+    if ( ( voice->GAIN & 0x80 ) == 0x00 ) {
+        // Direct mode
+        gainParameter = voice->GAIN & 0xEF;
+    }
+    else {
+        // TODO - detect increase|decrease (linear|bent line |exponential) modes
+        gainParameter = voice->GAIN & 0x1F;
+    }
+    voice->ENVX &= 0xEF;
+    int8_t outX = (int8_t)voice->OUTX;
+
     // Copy over the sound data
     uint16_t sourceAddr = sampleDirectoryAddr + ( voice->SRCN * 2 * sizeof( uint16_t ) );
     uint16_t sampleStartAddr = spcMemoryMapReadU16( sourceAddr );
     uint16_t sampleLoopAddr = spcMemoryMapReadU16( sourceAddr + sizeof( uint16_t ) );
-    sampleStartAddr = sampleLoopAddr;
-    uint16_t numBlocksLeadin = getBRRBlockCount( sampleStartAddr );
-    uint16_t numBlocksLoop = getBRRBlockCount( sampleLoopAddr );
 
-    size_t leadinBufferSize = numBlocksLeadin * 16 * sizeof( int16_t ); // Each block has 16 PCM16 samples in it
-    int16_t *leadinSampleBuffer = (int16_t*) malloc( leadinBufferSize );
-    voiceState->playingLoop = decodeBRRChain( sampleStartAddr, leadinSampleBuffer );
+    voiceState->voiceData.numLeadinBlocks = getBRRBlockCount( sampleStartAddr );
+    size_t leadinBufferSize = voiceState->voiceData.numLeadinBlocks * 16 * sizeof( int16_t ); // Each block has 16 PCM16 samples in it
+    if ( voiceState->voiceData.leadinSamples != NULL ) {
+        free( voiceState->voiceData.leadinSamples );
+    }
 
-    uint16_t pitch = ( ( (uint16_t)voice->Ph & 0x3F ) << 8 ) | voice->Pl;
-    uint32_t sampleRate = pitch * 7.8125;
+    voiceState->voiceData.leadinSamples = (int16_t*) malloc( leadinBufferSize );
+    voiceState->voiceData.leadinLoopFlag = decodeBRRChain( sampleStartAddr, voiceState->voiceData.leadinSamples );
 
-    // 0 -> N-1 BRR blocks into the first buffer
-    uint8_t numBuffers = 2;
-    uint16_t initBufferSize = leadinBufferSize - ( 16 * sizeof( int16_t ) );
-    ALenum format = AL_FORMAT_MONO16;
-    
-    ALuint tBuffer;
-    alGenBuffers( 1, &tBuffer );
-    alBufferData( tBuffer, format, leadinSampleBuffer, leadinBufferSize, sampleRate );
- //   alBufferData( voiceState->audioBuffers[ 0 ], AL_FORMAT_MONO16, leadinSampleBuffer, initBufferSize, sampleRate );
- //   alBufferData( voiceState->audioBuffers[ 1 ], AL_FORMAT_MONO16, ( (uint8_t*)leadinSampleBuffer ) + initBufferSize, 16 * sizeof( int16_t ), sampleRate );
- //   if ( voiceState->playingLoop ) {
- //       uint16_t numBlocksLoop = getBRRBlockCount( sampleLoopAddr );
- //       uint16_t loopBufferSize = numBlocksLoop * 16 * sizeof( int16_t ); // Each block has 16 PCM16 samples in it
- //       int16_t *loopSampleBuffer = (int16_t*) malloc( loopBufferSize ); 
- //       bool loopHasLoop = decodeBRRChain( sampleLoopAddr, loopSampleBuffer );
- //       alBufferData( voiceState->audioBuffers[ 2 ], AL_FORMAT_MONO16, loopSampleBuffer, loopBufferSize, sampleRate );
- //       ++numBuffers;
- //   }
-    // Queue 'em up
-    ALuint source = voiceState->voiceSource;
-    alGenSources( 1, &source );
+    voiceState->voiceData.numLoopBlocks = getBRRBlockCount( sampleLoopAddr );
+    size_t loopBufferSize = voiceState->voiceData.numLoopBlocks * 16 * sizeof( int16_t ); // Each block has 16 PCM16 samples in it
+    if ( voiceState->voiceData.loopSamples != NULL ) {
+        free( voiceState->voiceData.loopSamples );
+    }
 
-    alSourcef( source, AL_PITCH, 1 );
-    alSourcef( source, AL_GAIN, 1.0f );
-    alSource3f( source, AL_POSITION, 0, 0, 0 );
-    alSource3f( source, AL_VELOCITY, 0, 0, 0 );
-    alSourcei( source, AL_LOOPING, AL_TRUE );
-    //alSourceQueueBuffers( source, numBuffers, voiceState->audioBuffers );
-    alSourcei( source, AL_BUFFER, tBuffer );
-    alSourcePlay( source );
+    voiceState->voiceData.loopSamples = (int16_t*) malloc( loopBufferSize );
+    voiceState->voiceData.loopLoopFlag = decodeBRRChain( sampleLoopAddr, voiceState->voiceData.loopSamples );
+
+    //uint16_t pitch = ( ( (uint16_t)voice->Ph & 0x3F ) << 8 ) | voice->Pl;
+    //uint32_t sampleRate = pitch * 7.8125;
+}
+
+typedef struct VoiceSample {
+    int16_t sampleLeft;
+    int16_t sampleRight;
+} VoiceSample;
+
+// Called from audio CB so needs to be fast
+static VoiceSample getNextVoiceSample( uint8_t voiceId ) {
+    // TODO - should probably be locked
+    // TODO - optimise
+
+    VoiceState *voiceState = &dspState.voiceStates[ voiceId ];
+    if ( !voiceState->playing ) {
+        return (VoiceSample){ 0, 0 };
+    }
+
+    VoiceRegisters *voice = (VoiceRegisters*)( ( (uint8_t*) &registers ) + ( voiceId * 0x10 ) );
+
+    // This is pretty inefficient...
+    int16_t sample = 0;
+    const bool inLoopBlock = voiceState->currentBlock >= voiceState->voiceData.numLeadinBlocks;
+    if ( inLoopBlock ) {
+        uint16_t loopBlock = voiceState->currentBlock - voiceState->voiceData.numLeadinBlocks;
+        uint16_t loopSample = ( loopBlock * 16 ) + voiceState->currentSample++;
+        if ( voiceState->currentSample > 16 ) {
+            voiceState->currentSample = 0;
+            voiceState->currentBlock++;
+            if ( loopBlock >= voiceState->voiceData.numLoopBlocks ) {
+                voiceState->currentBlock = voiceState->voiceData.numLeadinBlocks;
+            }
+        }
+        sample = voiceState->voiceData.loopSamples[ loopSample ];
+    }
+    else {
+        uint16_t leadinSample = ( voiceState->currentBlock * 16 ) + voiceState->currentSample++;
+        if ( voiceState->currentSample > 16 ) {
+            voiceState->currentSample = 0;
+            voiceState->currentBlock++;
+            if ( voiceState->currentBlock >= voiceState->voiceData.numLeadinBlocks ) {
+                // TODO - check if we should loop, set envelope if we're not
+                // TODO - set ENDX
+                registers.ENDX |= 1 << voiceId;
+            }
+        }
+        sample = voiceState->voiceData.leadinSamples[ leadinSample ];
+    }
+
+    // TODO - shouldn't be writing directly to registers from this thread
+    voice->OUTX = (uint8_t)( sample >> 8 & 0x00FF );
+
+    return (VoiceSample){ 
+        (int16_t)( ( (int32_t)sample * (int32_t)voice->VOL_L ) >> 7 ), 
+        (int16_t)( ( (int32_t)sample * (int32_t)voice->VOL_R ) >> 7 )
+    };
 }
 
 void dspTick() {
@@ -422,43 +499,37 @@ void dspTick() {
         }        
         if ( voiceState->playing ){
             // Update playing state
-            ALint buffersProcessed;
-            alGetSourcei( voiceState->voiceSource, AL_BUFFERS_PROCESSED, &buffersProcessed );
-            if ( buffersProcessed == 1 && !voiceState->endxSet ) {
-                // First buffer complete, set ENDX flag
-                registers.ENDX |= mask;
-                voiceState->endxSet = true;
-            }
-            else if ( buffersProcessed == 2 && voiceState->playingLoop ) {
-                // In the loop buffer. Unqueue the first 2 buffers and set source to loop
-                // TODO - that
-            }
-
         }
         
         // bool keyOff = registers.KOF & mask;
         // bool noiseOn = registers.NOV & mask;
         // bool pmodOn = ( registers.PMON & 0xFE ) & mask;
         // bool echoOn = ( registers.EOV & 0xFE ) & mask;
-
-        // bool adsrEnable = voice->ADSR1 & 0x80;
-        // uint8_t decayRate = voice->ADSR1 & 0x0F;
-        // uint8_t attackRate = ( voice->ADSR1 >> 4 ) & 0x07;
-        // uint8_t sustainRate = voice->ADSR2 & 0x1F;
-        // uint8_t sustainLevel = ( voice->ADSR2 >> 5 ) & 0x07;
-
-        // uint8_t gainParameter;
-        // if ( ( voice->GAIN & 0x80 ) == 0x00 ) {
-        //     // Direct mode
-        //     gainParameter = voice->GAIN & 0xEF;
-        // }
-        // else {
-        //     // TODO - detect increase|decrease (linear|bent line |exponential) modes
-        //     gainParameter = voice->GAIN & 0x1F;
-        // }
-        
-        // voice->ENVX &= 0xEF;
-        
-        // int8_t outX = (int8_t)voice->OUTX;
     }
+}
+
+int portAudioStreamCallback( const void *input, void *output, unsigned long frameCount,
+                             const PaStreamCallbackTimeInfo* timeInfo,
+                             PaStreamCallbackFlags statusFlags, void *userData ) {
+    (void)input;
+    (void)frameCount;
+    (void)timeInfo;
+    (void)statusFlags;
+    (void)userData;
+
+    static uint64_t cnt = 0;
+    VoiceSample frameSample = { 0x00, 0x00 };
+    int16_t *outBuffer = (int16_t*) output;
+    for ( uint8_t voiceId = 0; voiceId < 8; ++voiceId ) {
+        VoiceSample voiceSample = getNextVoiceSample( voiceId );
+        frameSample.sampleLeft += voiceSample.sampleLeft;
+        frameSample.sampleRight += voiceSample.sampleRight;
+    }
+
+    //frameSample = ( ++cnt % 256 ) * 10;
+    frameSample.sampleLeft = (int16_t)( ( (int32_t)frameSample.sampleLeft * (int32_t)registers.MVOL_L ) >> 7 );
+    frameSample.sampleRight = (int16_t)( ( (int32_t)frameSample.sampleRight * (int32_t)registers.MVOL_R ) >> 7 );
+    *outBuffer++ = frameSample.sampleLeft;
+    *outBuffer = frameSample.sampleRight;
+    return paNoError;
 }
