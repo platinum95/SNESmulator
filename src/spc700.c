@@ -112,7 +112,6 @@ static uint8_t IPL_ROM[ 64 ] = {
 };
 
 static uint32_t timerClockCounter = 0;
-static uint8_t controlRegisterState = 0;
 static uint8_t timersStage2[ 3 ];
 static bool t0Enabled = false;
 static bool t1Enabled = false;
@@ -124,23 +123,23 @@ static inline void updateTimers() {
     // T0 and T1 @ 8KHz = 125 CPU cycles per tick
     // T2 @ 64KHz = ~16 CPU cycles per tick
 
-
-    if ( t0Enabled && !( controlRegisterState & 0x01 ) ) {
+/*
+    if ( t0Enabled ) {
         // Zero Timer 0
         timersStage2[ 0 ] = 0;
         registers->timer0counter = 0;
     }
-    if ( t1Enabled && !( controlRegisterState & 0x02 ) ) {
+    if ( t1Enabled ) {
         // Zero Timer 1
         timersStage2[ 1 ] = 0;
         registers->timer1counter = 0;
     }
-    if ( t2Enabled && !( controlRegisterState & 0x04 ) ) {
+    if ( t2Enabled ) {
         // Zero Timer 2
         timersStage2[ 2 ] = 0;
         registers->timer2counter = 0;
     }
-
+*/
     ++timerClockCounter;
 
     if ( timerClockCounter == 128 ) {
@@ -166,7 +165,7 @@ static inline void updateTimers() {
 }
 
 /* Initialise (power on) */
-void spc700_initialise() {
+void spc700Initialise() {
     registers->port0 = 0xAA;
     registers->port1 = 0xBB;
     CPUWriteComPorts[ 0 ] = 0xAA;
@@ -174,11 +173,10 @@ void spc700_initialise() {
     SP = 0xEF;
     PC = 0xFFC0;
     memcpy( &APUMemory[ 0xFFC0 ], IPL_ROM, sizeof( IPL_ROM ) );
-    controlRegisterState = registers->control;
 }
 
 /* Execute next instruction, update PC and cycle counter etc */
-void spc700_execute_next_instruction() {
+void spc700Tick() {
     curr_program_counter = PC;
     uint8_t opcode = spcMemoryMapRead( PC++ );
     SPC700InstructionEntry *entry = &instructions[ opcode ];
@@ -195,11 +193,12 @@ void spc700_execute_next_instruction() {
 }
 
 /* Access the 4 visible bytes from the CPU */
-void accessSpcComPort( uint8_t port, uint8_t *dataBus, bool writeLine ) {
-    if ( port > 3 ) {
-        // TODO- throw signal
-        return;
-    }
+void spc700PortAccess( uint8_t addressBus, uint8_t *dataBus, bool writeLine ) {
+    // 0x40->0x43, 0x44-0x7F (mirrors)
+    // TODO - validate address bus
+
+    uint8_t base = addressBus - 0x40;
+    uint8_t port = base % 4;
     if ( writeLine ) {
         CPUWriteComPorts[ port ] = *dataBus;
     }
@@ -256,6 +255,9 @@ static inline void spcRegisterAccess( uint16_t addressBus, uint8_t *dataBus, boo
         }
         // Reset all timers
         timersStage2[ 0 ] = timersStage2[ 1 ] = timersStage2[ 2 ] = 0x00;
+        registers->timer0counter = 0;
+        registers->timer1counter = 0;
+        registers->timer2counter = 0;
 
         t2Enabled = val & 0x04;
         t1Enabled = val & 0x02;
@@ -275,34 +277,41 @@ static inline void spcRegisterAccess( uint16_t addressBus, uint8_t *dataBus, boo
         return;
     }
     else if ( addressBus <= 0xF7 ) {
-        // Communication ports
-        // TODO - can't handle read/write differently until the main CPU has a read/write-based bus
-        //hostAddress = &APUMemory[ addressBus ];
-        
+        // Communication ports        
         if ( writeLine ) {
             APUMemory[ addressBus ] = *dataBus;
-            return;
         }
         else {
             // Need to read what main CPU wrote
             *dataBus = CPUWriteComPorts[ addressBus - 0xF4 ];
-            return;
         }
-        
+        return;
     }
     else if ( addressBus <= 0xF9 ) {
         // Regular memory
         hostAddress = &APUMemory[ addressBus ];
     }
     else if ( addressBus <= 0xFC ) {
-        // Timers
-        // TODO
-        hostAddress = &APUMemory[ addressBus ];
+        // Sets registers->timer{0-2}
+        if ( !writeLine ) {
+            printf( "Attempting to read timer value\n" );
+            *dataBus = 0x00;
+        }
+        else {
+            APUMemory[ addressBus ] = *dataBus;
+        }
+        return;
     }
     else if ( addressBus <= 0xFF ) {
         // Counters
-        // TODO
-        hostAddress = &APUMemory[ addressBus ];
+        if ( writeLine ) {
+            printf( "Attempting to write to timer counter\n" );
+        }
+        else {
+            *dataBus = APUMemory[ addressBus ] & 0x0F;
+            APUMemory[ addressBus ] = 0x00;
+        }
+        return;
     }
     else {
         // Throw some error here

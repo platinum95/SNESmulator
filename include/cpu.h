@@ -4,8 +4,8 @@
 #include "cartridge.h"
 #include <stdint.h>
 
-void InitialiseCpu( RomTypes romType );
+void cpuInitialise();
 
-void ExecuteNextInstruction();
+void cpuTick();
 
 #endif //CPU_H

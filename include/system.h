@@ -15,6 +15,7 @@ System emulates the underlying system of the SNES and manages:
 // Represents the 24-bit address bus value.
 // Note that padding means we don't save space over a uint32_t, but it should
 // be easier to access memory components
+// TODO - should probably be in a common header so that we don't have cyclical includes
 typedef struct MemoryAddress {
     uint8_t     bank;
     uint16_t    offset;
@@ -28,6 +29,9 @@ void begin_execution();
 
 // Get a pointer to host memory equivalent to emulated-memory address
 void snesMemoryMap( MemoryAddress addressBus, uint8_t *dataBus, bool writeLine );
+
+void A_BusAccess( MemoryAddress addressBus, uint8_t *dataBus, bool writeLine, bool wramLine, bool cartLine );
+void B_BusAccess( uint8_t addressBus, uint8_t *dataBus, bool writeLine );
 
 // SNES (both main CPU and SPC700) is little-endian, MSB at highest address.
 // On little-endian hosts, we can just treat the memory as-is.

@@ -1,6 +1,6 @@
 /*
- * 
- */
+*
+*/
 
 #include "cpu.h"
 #include "exec_compare.h"
@@ -52,14 +52,10 @@ typedef struct InstructionEntry {
 
 static InstructionEntry instructions[ 0x100 ];
 
-void InitialiseCpu( RomTypes romType ) {
+void cpuInitialise() {
 
     // TODO - get actual entry point addresses
-    if ( romType == LoRom )
-        PC = 0xFF70;
-    else if ( romType == HiRom )
-        PC =  0xFF70;
-
+    PC = 0xFF70;
     PBR = 0x00;
     SP = 0x01FF;//0x8000;
     DP = (uint16_t)0x00;
@@ -85,16 +81,12 @@ ExecutionState GetExecutionState() {
 
 static inline uint8_t MainBusReadU8( MemoryAddress addressBus );
 
-uint8_t prev_instr = 0;
-
 // Used as the base address of the current operation
 uint16_t currentOperationOffset;
 uint16_t nextOperationOffset;
-void ExecuteNextInstruction() {
-    MemoryAddress instructionAddress = (MemoryAddress){ PBR, PC };
-
-    instructionAddress.bank &= ~0x80;
-    uint8_t currentOpcode = MainBusReadU8( instructionAddress );
+void cpuTick() {
+    currentOperationOffset = PC;
+    uint8_t currentOpcode = MainBusReadU8( (MemoryAddress){ PBR, PC } );
 
 #if 0
     static int counter = 0;
@@ -103,17 +95,14 @@ void ExecuteNextInstruction() {
         start_comp();
     }
     uint8_t comparison = compare( GetExecutionState() );
-    if ( comparison != Match && 
+    if ( comparison != Match &&
         ( comparison & ~( AccumulatorMismatch | PRegisterMismatch ) ) ){
         // Current max score - 45873
         printf( "Mismatch\n" );
     }
 
     printf( "\n%03i | %02x:\n", counter, currentOpcode );
-#endif    
-    prev_instr = currentOpcode;
-    
-    currentOperationOffset = PC;
+#endif
     InstructionEntry *entry = &instructions[ currentOpcode ];
     nextOperationOffset = PC + entry->bytes;
 
@@ -124,19 +113,112 @@ void ExecuteNextInstruction() {
 
 }
 
+static inline void CPURegisterAccess( uint16_t registerBus, uint8_t *dataBus, bool writeLine ) {
+    // TODO
+    (void) registerBus;
+    (void) dataBus;
+    (void) writeLine;
+    printf( "TODO - CPU internal registers\n" );
+}
+
 // TODO - split A and B bus up
-static inline void MainBusAccess( MemoryAddress addressBus, uint8_t *dataBus, bool writeLine ) {
-    snesMemoryMap( addressBus, dataBus, writeLine );
+static inline void MemoryAccess( MemoryAddress addressBus, uint8_t *dataBus, bool writeLine ) {
+    if ( addressBus.bank <= 0x3F ) {
+        if ( addressBus.offset <= 0x1FFF ) {
+            // Address bus A + /WRAM
+            // Always lower 8K of WRAM, so adjust the address accordingly
+            addressBus.bank = 0x7E;
+            A_BusAccess( addressBus, dataBus, writeLine, true, false );
+        }
+        if ( addressBus.offset <= 0x20FF ) {
+            // Address bus A
+            // TODO - possibly open-bus?
+        }
+        else if ( addressBus.offset <= 0x21FF ) {
+            // Address bus B
+            // B-Bus I/O ports
+            B_BusAccess( addressBus.offset & 0x00FF, dataBus, writeLine );
+        }
+        else if ( addressBus.offset <= 0x3FFF ) {
+            // Address bus A
+            // TODO - Open bus?
+        }
+        else if ( addressBus.offset <= 0x437F ) {
+            // Internal CPU registers
+            CPURegisterAccess( addressBus.offset, dataBus, writeLine );
+        }
+        else if ( addressBus.offset <= 0x5FFF ) {
+            // TODO - Open-bus
+        }
+        else if ( addressBus.offset <= 0x7FFF ) {
+            // TODO - Expansion (A-bus probably)
+            // For now, just call onto A-bus with /CART
+            A_BusAccess( addressBus, dataBus, writeLine, false, true );
+        }
+        else {
+            // Address bus A + /CART
+            A_BusAccess( addressBus, dataBus, writeLine, false, true );
+        }
+    }
+    else if ( addressBus.bank <= 0x7D ) {
+        // Address bus A + /CART
+        A_BusAccess( addressBus, dataBus, writeLine, false, true );
+    }
+    else if ( addressBus.bank <= 0x7F ) {
+        // Address bus A + /WRAM
+        A_BusAccess( addressBus, dataBus, writeLine, true, false );
+    }
+    else if ( addressBus.bank <= 0xBF ) {
+        if ( addressBus.offset <= 0x1FFF ) {
+            // Address bus A + /WRAM
+            // Always lower 8K of WRAM, so adjust the address accordingly
+            addressBus.bank = 0x7E;
+            A_BusAccess( addressBus, dataBus, writeLine, true, false );
+        }
+        if ( addressBus.offset <= 0x20FF ) {
+            // Address bus A
+            // TODO - possibly open-bus?
+        }
+        else if ( addressBus.offset <= 0x21FF ) {
+            // Address bus B
+            // B-Bus I/O ports
+            B_BusAccess( addressBus.offset & 0x00FF, dataBus, writeLine );
+        }
+        else if ( addressBus.offset <= 0x3FFF ) {
+            // Address bus A
+            // TODO - Open bus?
+        }
+        else if ( addressBus.offset <= 0x437F ) {
+            // Internal CPU registers
+            CPURegisterAccess( addressBus.offset, dataBus, writeLine );
+        }
+        else if ( addressBus.offset <= 0x5FFF ) {
+            // TODO - Open-bus
+        }
+        else if ( addressBus.offset <= 0x7FFF ) {
+            // TODO - Expansion (A-bus probably)
+            // For now, just call onto A-bus with /CART
+            A_BusAccess( addressBus, dataBus, writeLine, false, true );
+        }
+        else {
+            // Address bus A + /CART
+            A_BusAccess( addressBus, dataBus, writeLine, false, true );
+        }
+    }
+    else {
+        // Address bus A + /CART
+        A_BusAccess( addressBus, dataBus, writeLine, false, true );
+    }
 }
 
 static inline uint8_t MainBusReadU8( MemoryAddress addressBus ) {
     uint8_t value;
-    MainBusAccess( addressBus, &value, false );
+    MemoryAccess( addressBus, &value, false );
     return value;
 }
 
 static inline void MainBusWriteU8( MemoryAddress addressBus, uint8_t value ) {
-    MainBusAccess( addressBus, &value, true );
+    MemoryAccess( addressBus, &value, true );
 }
 
 // TODO - handle page/bank wrapping for the 16-bit read/writes
@@ -323,7 +405,7 @@ static inline void pushU16( uint16_t val ) {
     pushU8( (uint8_t)( ( val >> 8 ) & 0x00FF ) );
     pushU8( (uint8_t)( val & 0x00FF ) );
 }
- 
+
 static inline uint8_t popU8() {
     return MainBusReadU8( GetBusAddress( 0x00, ++SP ) );
 }
@@ -333,11 +415,11 @@ static inline uint16_t popU16() {
     val |= ( (uint16_t) popU8() ) << 8;
     return val;
 }
- 
- #pragma endregion
- 
- #pragma region ADC
- int BCD_ADD_NYBBLE(uint8_t *reg, uint8_t toAdd) {
+
+#pragma endregion
+
+#pragma region ADC
+int BCD_ADD_NYBBLE(uint8_t *reg, uint8_t toAdd) {
      uint8_t reg_val = *reg;
      uint8_t added = reg_val + toAdd;
      uint8_t carry = added & 0x10;
@@ -348,9 +430,9 @@ static inline uint16_t popU16() {
      added &= 0x0F;
      *reg = added;
      return carry;
- }
- 
- static inline void ADC8( uint8_t O1 ) {
+}
+
+static inline void ADC8( uint8_t O1 ) {
     bool decimal = ( p_register & DECIMAL_FLAG );
     uint8_t a = accumulator, b, r;
 
@@ -385,7 +467,7 @@ static inline uint16_t popU16() {
         accumulator |= ( lhs16 & 0x00ff );
         r = accumulator;
     }
-    
+
     zero = ( ( accumulator & 0x00FF ) == 0 ) ? ZERO_FLAG : zero;
     negative = ( accumulator & 0x0080 ) ? NEGATIVE_FLAG : negative;
     if ( ( ( a & 0x80 ) == ( b & 0x80 ) ) && ( ( r & 0x80 ) != ( a & 0x80 ) ) ) {
@@ -393,8 +475,8 @@ static inline uint16_t popU16() {
     }
     p_register = ( p_register & ~( NEGATIVE_FLAG | CARRY_FLAG | ZERO_FLAG | OVERFLOW_FLAG ) )
         | negative | zero | carry | overflow;
- }
- 
+}
+
 static inline void ADC16( uint16_t O1 ) {
     // TODO - rewrite all this
     bool decimal = ( p_register & DECIMAL_FLAG );
@@ -432,7 +514,7 @@ static inline void ADC16( uint16_t O1 ) {
         overflow = OVERFLOW_FLAG;
     zero = ( accumulator == 0 ) ? ZERO_FLAG : zero;
     negative = ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : negative;
-    
+
      p_register = ( p_register & ~( NEGATIVE_FLAG | CARRY_FLAG | ZERO_FLAG | OVERFLOW_FLAG ) )
            | negative | zero | carry | overflow;
 }
@@ -447,28 +529,28 @@ static inline void ADCMem( MemoryAddress address ) {
         ADC16( MainBusReadU16( address ) );
     }
 }
- 
- //ADC(_dp_, X)    61    DP Indexed Indirect, X    NV� - ZC    2
- void f61_ADC(){
+
+//ADC(_dp_, X)    61    DP Indexed Indirect, X    NV� - ZC    2
+void f61_ADC(){
      ADCMem( directIndexedXIndirect() );
- }
- 
- //ADC sr, S    63    Stack Relative    NV� - ZC    2
- void f63_ADC(){
+}
+
+//ADC sr, S    63    Stack Relative    NV� - ZC    2
+void f63_ADC(){
      ADCMem( stackRelative() );
- }
- 
- //ADC dp    65    Direct Page    NV� - ZC    2
- void f65_ADC(){
+}
+
+//ADC dp    65    Direct Page    NV� - ZC    2
+void f65_ADC(){
      ADCMem( direct( 0 ) );
- }
- 
- //ADC[_dp_]    67    DP Indirect Long    NV� - ZC    2
- void f67_ADC(){
+}
+
+//ADC[_dp_]    67    DP Indirect Long    NV� - ZC    2
+void f67_ADC(){
      ADCMem( directIndirectLong() );
- }
- 
- //ADC #const    69    Immediate    NV� - ZC    2/3
+}
+
+//ADC #const    69    Immediate    NV� - ZC    2/3
 void f69_ADC(){
     // TODO - maybe immediateMFlag() or something?
     if ( p_register & M_FLAG ) {
@@ -479,12 +561,12 @@ void f69_ADC(){
         ++nextOperationOffset;
     }
 }
- 
- //ADC addr    6D    Absolute    NV� - ZC    3
+
+//ADC addr    6D    Absolute    NV� - ZC    3
 void f6D_ADC(){
     ADCMem( absolute( 0 ) );
 }
- 
+
 //ADC long    6F    Absolute Long    NV� - ZC    4
 void f6F_ADC(){
     ADCMem( absoluteLong( 0 ) );
@@ -495,38 +577,38 @@ void f71_ADC(){
     ADCMem( directIndirectIndexedY() );
 }
 
- //ADC(_dp_)    72    DP Indirect    NV� - ZC    2
+//ADC(_dp_)    72    DP Indirect    NV� - ZC    2
 void f72_ADC(){
     ADCMem( directIndirect() );
 }
 
- //ADC(_sr_, S), Y    73    SR Indirect Indexed, Y    NV� - ZC    2
+//ADC(_sr_, S), Y    73    SR Indirect Indexed, Y    NV� - ZC    2
 void f73_ADC(){
     ADCMem( stackRelativeIndirectIndexedY() );
 }
 
- //ADC dp, X    75    DP Indexed, X    NV� - ZC    2
+//ADC dp, X    75    DP Indexed, X    NV� - ZC    2
 void f75_ADC(){
     ADCMem( direct( X ) );
 }
 
- //ADC[_dp_], Y    77    DP Indirect Long Indexed, Y    NV� - ZC    2
+//ADC[_dp_], Y    77    DP Indirect Long Indexed, Y    NV� - ZC    2
 void f77_ADC(){
     // TODO - verify
     ADCMem( directIndirectIndexedYLong() );
 }
 
- //ADC addr, Y    79    Absolute Indexed, Y    NV� - ZC    3
+//ADC addr, Y    79    Absolute Indexed, Y    NV� - ZC    3
 void f79_ADC(){
     ADCMem( absoluteIndexedY() );
 }
 
- //ADC addr, X    7D    Absolute Indexed, X    NV� - ZC    3
+//ADC addr, X    7D    Absolute Indexed, X    NV� - ZC    3
 void f7D_ADC(){
     ADCMem( absoluteIndexedX() );
 }
 
- //ADC long, X    7F    Absolute Long Indexed, X    NV� - ZC    4
+//ADC long, X    7F    Absolute Long Indexed, X    NV� - ZC    4
 void f7F_ADC(){
     ADCMem( absoluteLongIndexedX() );
 }
@@ -567,12 +649,12 @@ static inline void ANDMem( MemoryAddress address ) {
     }
 }
 
- //AND(_dp, _X)    21    DP Indexed Indirect, X    N��Z - 2
+//AND(_dp, _X)    21    DP Indexed Indirect, X    N��Z - 2
 void f21_AND(){
     ANDMem( directIndexedXIndirect() );
 }
 
- //AND sr, S    23    Stack Relative    N��Z - 2
+//AND sr, S    23    Stack Relative    N��Z - 2
 void f23_AND(){
     ANDMem( stackRelative() );
 }
@@ -803,7 +885,7 @@ void f70_BVS(){
 
 ////BRK    0    Stack / Interrupt    � - DI�    28
 void f00_BRK(){
-    // TODO 
+    // TODO
     call_stack[ cs_counter++ ] = nextOperationOffset;
     PC = 0xFFE6;
 }
@@ -840,7 +922,7 @@ static inline void BIT16( uint16_t O1 ){
     zero = ( result == 0 ) ? ZERO_FLAG : zero;
     negative = ( O1 & 0x8000 ) ? NEGATIVE_FLAG : negative;
     overflow = ( O1 & 0x4000 ) ? OVERFLOW_FLAG : overflow;
-    
+
     p_register = ( p_register & ~( NEGATIVE_FLAG | ZERO_FLAG | OVERFLOW_FLAG  ) )
         | zero | negative | overflow;
 }
@@ -887,7 +969,7 @@ void f89_BIT(){
     }
     p_register = ( p_register & ~( NEGATIVE_FLAG | OVERFLOW_FLAG ) ) | pRegisterPersistent;
 }
-#pragma endregion 
+#pragma endregion
 
 ////CLC    18    Implied    �� - C    1
 void f18_CLC(){
@@ -1443,10 +1525,10 @@ void fFC_JSR(){
 static inline uint8_t LD8( uint8_t O1 ) {
     uint16_t negative = 0x00;
     uint16_t zero = 0x00;
-    
+
     negative = ( O1 & 0x80 ) ? NEGATIVE_FLAG : negative;
     zero = ( O1 == 0 ) ? ZERO_FLAG : zero;
-    
+
     p_register = ( p_register & ~( ZERO_FLAG | NEGATIVE_FLAG ) )
         | zero | negative;
 
@@ -1792,7 +1874,7 @@ static inline void ORA8( uint8_t O1 ) {
 static inline void ORA16( uint16_t O1 ) {
     uint8_t zero = 0x00;
     uint8_t negative = 0x00;
-    
+
     accumulator |= O1;
     zero = ( accumulator == 0 ) ? ZERO_FLAG : zero;
     negative = ( accumulator & 0x8000 ) ? NEGATIVE_FLAG : zero;
@@ -2193,7 +2275,7 @@ static inline void SBC8( uint8_t O1 ) {
     uint8_t value = O1;
     uint8_t accValue = (uint8_t) ( accumulator & 0x00FF );
     uint8_t result = 0x00;
-    
+
     if ( p_register & DECIMAL_FLAG ) {
         // TODO
     }
@@ -2744,7 +2826,7 @@ void fFB_XCE(){
     // TODO - Ground truth is apparently broken, so nix this while developing
     if ( inEmulationMode )
         p_register |= CARRY_FLAG;
-    
+
     inEmulationMode = carryVal;
 
     PC++;

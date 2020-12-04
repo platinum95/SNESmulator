@@ -4,7 +4,7 @@
 int main() {
 
     const char* romPath = "smk.sfc";
-    if ( LoadRom( romPath ) ) {
+    if ( cartridgeLoadRom( romPath ) ) {
         return 1;
     }
     

@@ -4,9 +4,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-void spc700_initialise();
-void spc700_execute_next_instruction();
-void accessSpcComPort( uint8_t port, uint8_t *dataBus, bool writeLine );
+void spc700Initialise();
+void spc700Tick();
+void spc700PortAccess( uint8_t addressBus, uint8_t *dataBus, bool writeLine );
 
 uint8_t spcMemoryMapRead( uint16_t addr );
 // TODO - readU16 may need to know if page can increment, or just offset
