@@ -1,7 +1,12 @@
 #include "ppu.h"
 
+#include "cpu.h"
+
+#include <assert.h>
 #include <memory.h>
 #include <stdio.h>
+
+// Just PAL for now, NTSC later
 
 typedef struct Ports {
     // Write-only region
@@ -73,33 +78,174 @@ typedef struct Ports {
     uint8_t STAT78; // 213Fh  - PPU2 Status and PPU2 Version Number                Bit7=0
 } Ports;
 
+static uint8_t VRAM[ 0x8000 ]; // 32KB
+static uint8_t CGRAM[ 0x200 ]; // 512B
+static uint8_t OAMRAM[ 0x200 + 0x20 ]; // 512B + 32B
+
+#define H_BLANK_BOUNDARY 256
+#define H_MAX 340
+#define V_BLANK_BOUNDARY 240
+#define V_MAX 312
+
+typedef struct PPUState {
+    uint16_t vCount;
+    uint16_t hCount;
+    uint8_t countDiv;
+    bool hBlank;
+    bool vBlank;
+    bool fBlank;
+
+    bool cgramSecondAccess;
+    uint8_t CGRAM_lsb_latch;
+
+    bool oamramSecondAccess;
+    uint8_t oamramLsbLatch;
+    uint16_t oamramAddress;
+} PPUState;
+
 static Ports ports;
+static PPUState ppuState;
 
 void ppuInitialise() {
     memset( &ports, 0x00, sizeof( Ports ) );
+    memset( &ppuState, 0x00, sizeof( PPUState ) );
+}
+
+static inline void vInc() {
+    ++ppuState.vCount;
+    if ( ppuState.vCount == V_BLANK_BOUNDARY ) {
+        vBlank( true );
+    }
+    else if ( ppuState.vCount == V_MAX ) {
+        ppuState.vCount = 0;
+        vBlank( false );
+    }
+}
+
+static inline void hInc() {
+    ++ppuState.hCount;
+    if ( ppuState.hCount == H_BLANK_BOUNDARY ) {
+        hBlank( true );
+    }
+    else if ( ppuState.hCount == H_MAX ) {
+        ppuState.hCount = 0;
+        hBlank( false );
+        vInc();
+    }
 }
 
 void ppuTick() {
+    // TODO
+    if ( ++ppuState.countDiv == 4 ) {
+        ppuState.countDiv = 0;
+        hInc();
+    }
+
+}
+
+static inline void prefetchRead() {
+    uint16_t offset = ( ( (uint16_t)ports.VMADDH ) << 8 ) | ( (uint16_t)ports.VMADDL );
+    ports.RDVRAML = VRAM[ offset ];
+    ports.RDVRAMH = VRAM[ offset + 1 ];
+}
+
+static inline void incrementVMADDR( bool highByte ) {
+    static const uint16_t incSteps[ 4 ] = { 2, 64, 256, 256 };
+    uint8_t incMode = ports.VMAIN;
+    uint16_t incStep = incSteps[ incMode & 0x03 ];
+    bool incHighByte = ( incMode & 0x80 );
+    if ( incHighByte ==  highByte ) {
+        uint16_t addr = ( (uint16_t)( ports.VMADDH << 8 ) ) | ( (uint16_t)ports.VMADDL );
+        addr += incStep;
+        ports.VMADDL = (uint8_t)( addr & 0x00FF );
+        ports.VMADDH = (uint8_t)( ( addr >> 8 ) & 0x00FF );
+    }
+
+    if ( incMode & 0x0C ) {
+        // TODO - rotate
+        printf( "TODO - VMADDR translation\n" );
+    }
 }
 
 void ppuPortAccess( uint8_t addressBus, uint8_t *dataBus, bool writeLine ) {
-    if ( addressBus > 0x3F ) {
-        // Invalid port
-        printf( "invalid PPU port access\n" );
-        *dataBus = 0;
-        return;
-    }
+    
+    assert( addressBus <= 0x3F );
 
     // TODO - explicit handling for state machine
     if ( addressBus <= 0x33 ) {
         if ( !writeLine ) {
             // Write-only
             printf( "Attempting to read W/O PPU port\n" );
-            *dataBus = 0;
             return;
         }
-        uint8_t *port = ( (uint8_t*)&ports ) + ( addressBus );
-        *dataBus = *port;
+        else {
+            switch( addressBus ) {
+                case 0x02: {
+                    // OAMADDL
+                    ports.OAMADDL = *dataBus;
+                    ppuState.oamramAddress &= ~0x1FF;
+                    ppuState.oamramAddress |= ( (uint16_t) *dataBus ) << 1;
+                    break;
+                }
+                case 0x03: {
+                    // OAMADDL
+                    ports.OAMADDH = *dataBus;
+                    ppuState.oamramAddress &= ~0x200;
+                    ppuState.oamramAddress |= ( (uint16_t) ( *dataBus & 0x01 ) ) << 9;
+                    break;
+                }
+                case 0x04: {
+                    // OAMDATA
+                    OAMRAM[ ppuState.oamramAddress ] = *dataBus;
+                    ++ppuState.oamramAddress;
+                    ppuState.oamramAddress &= 0x1FF;
+                    break;
+                }
+                case 0x16:
+                case 0x17:
+                    // VMADDl/h
+                    prefetchRead();
+                    break;
+                case 0x18:
+                case 0x19: {
+                    uint8_t offset = addressBus - 0x18;
+                    // TODO - VRAM accesses
+                    uint16_t addr = ( (uint16_t)( ports.VMADDH << 8 ) ) | ( (uint16_t)ports.VMADDL );
+                    addr += offset;
+                    addr &= ~0x8000;
+                    VRAM[ addr ] =  *dataBus;
+                    prefetchRead(); // TODO - prefetch before or after?
+                    incrementVMADDR( (bool)offset );
+                    break;
+                }
+                case 0x21:
+                    ppuState.cgramSecondAccess = false;
+                    ports.CGADD = *dataBus;
+                    break;
+                case 0x22: {
+                    // CGDATA
+                    if ( !ppuState.cgramSecondAccess ) {
+                        // Even address
+                        ppuState.CGRAM_lsb_latch = *dataBus;
+                        ppuState.cgramSecondAccess = true;
+                    }
+                    else {
+                        // TODO - open-bus upper-bit
+                        uint16_t addr = ports.CGADD * 2;
+                        CGRAM[ addr ] = *dataBus;
+                        CGRAM[ addr - 1 ] = ppuState.CGRAM_lsb_latch;
+                        ppuState.cgramSecondAccess = false;
+                        ++ports.CGADD;
+                    }
+                    break;
+                }
+                default: {
+                    uint8_t *port = ( (uint8_t*)&ports ) + ( addressBus );
+                    *port = *dataBus;
+                    break;
+                }
+            }
+        }
     }
     else {
         if ( writeLine ) {
@@ -107,7 +253,39 @@ void ppuPortAccess( uint8_t addressBus, uint8_t *dataBus, bool writeLine ) {
             printf( "Attempting to write R/O PPU port\n" );
             return;
         }
-        uint8_t *port = ( (uint8_t*)&ports ) + ( addressBus );
-        *port = *dataBus;
+        else {
+            uint8_t *port = ( (uint8_t*)&ports ) + ( addressBus );
+            *dataBus = *port;
+            switch( addressBus ) {
+                case 0x38: {
+                    // RDOAM
+                    *dataBus = OAMRAM[ ppuState.oamramAddress ];
+                    ++ppuState.oamramAddress;
+                    ppuState.oamramAddress &= 0x1FF;
+                    break;
+                }
+                case 0x39:
+                case 0x3A: {
+                    prefetchRead();
+                    uint8_t offset = addressBus - 0x39;
+                    incrementVMADDR( (bool)offset );
+                    break;
+                }
+                case 0x3B: {
+                    // RDCGRAM
+                    // TODO - open-bus upper-bit on odd address
+                    uint16_t addr = ports.CGADD * 2;
+                    if ( !ppuState.cgramSecondAccess ) {
+                        *dataBus = CGRAM[ addr ];
+                        ppuState.cgramSecondAccess = true;
+                    }
+                    else {
+                        *dataBus = CGRAM[ addr + 1 ];
+                        ppuState.cgramSecondAccess = false;
+                        ++ports.CGADD;
+                    }
+                }
+            }
+        }
     }
 }

@@ -4,7 +4,7 @@
 #include "cpu.h"
 #include "dsp.h"
 #include "ppu.h"
-#include "ram.h"
+#include "wram.h"
 #include "spc700.h"
 
 #include <stdio.h>
@@ -15,11 +15,6 @@ static uint8_t openBus;
 void cycle();
 bool execute;
 unsigned int cycle_counter;
-static uint8_t WRAM[ 0x20000 ]; // TODO - maybe move to own file
-
-uint32_t consolidateMemoryAddress( MemoryAddress memoryAddress ) {
-    return ( ( (uint32_t) memoryAddress.bank ) << 16 ) | ( (uint32_t)memoryAddress.offset );
-}
 
 int startup() {
     cpuInitialise();
@@ -50,23 +45,14 @@ void A_BusAccess( MemoryAddress addressBus, uint8_t *dataBus, bool writeLine, bo
     // TODO - might be able to split this into separate functions
     if ( wramLine ) {
         // Work ram
-        addressBus.bank -= 0x7E;
-        uint32_t wramIndex = consolidateMemoryAddress( addressBus );
-        if ( writeLine ) {
-            WRAM[ wramLine ] = *dataBus;
-        }
-        else {
-            *dataBus = WRAM[ wramLine ];
-        }
+        wramABusAccess( addressBus, dataBus, writeLine );
     }
     else if ( cartLine ) {
         // Cartridge
         cartridgeMemoryAccess( addressBus, dataBus, writeLine );
     }
     else {
-        // ?
-        // TODO - possibly open bus?
-        printf( "TODO - A-Bus open-bus access\n" );
+        // Possibly open bus?
     }
 }
 
@@ -84,11 +70,9 @@ void B_BusAccess( uint8_t addressBus, uint8_t *dataBus, bool writeLine ) {
     }
     else if ( addressBus <= 0x83 ) {
         // WRAM access
-        // TODO
-        printf( "TODO - WRAM access through registers\n" );
+        wramBBusAccess( addressBus, dataBus, writeLine );
     }
     else {
         // Open-bus
-        printf( "TODO - B-Bus open-bus access\n" );
     }
 }

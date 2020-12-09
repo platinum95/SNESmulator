@@ -3,13 +3,15 @@
 */
 
 #include "cpu.h"
-#include "exec_compare.h"
 
-#include <string.h>
+#include "dma.h"
+#include "exec_compare.h"
+#include "system.h"
+
+#include <assert.h>
 #include <stdbool.h>
 #include <stdio.h>
-
-#include "system.h"
+#include <string.h>
 
 /* TODO:
     - Should get/set ACC,X,Y with through the getters/setters for proper endian handling
@@ -40,10 +42,15 @@ static uint16_t DP;
 static uint16_t X, Y;
 static uint8_t emulation_flag; //emulation flag, lowest bit only
 
+static uint8_t MDR;
 
 static uint32_t call_stack[30];
 static uint8_t cs_counter = 0;
 
+static uint8_t IRQpin;
+static uint8_t InternalNMIFlag;
+
+static bool inIRQHandler;
 typedef struct InstructionEntry {
     void (*operation)(void);
     uint8_t bytes;
@@ -79,60 +86,485 @@ ExecutionState GetExecutionState() {
     return state;
 }
 
+void IRQ( bool level ) {
+    if ( IRQpin != level ) {
+        IRQpin = level;
+    }
+}
+
+// TODO - move
+static uint8_t RDNMI;
+static uint8_t NMITIMEN;
+void NMI( bool start ) {
+    // TODO - if NMI enabled after being disabled and flag hasn't been cleared, NMI should trigger again
+    //      e.g.: NMI Enabled -> V-Blank, RDNMI Set, CPU goes to vector -> 
+    //      CPU RTI -> RDNMI not read/cleared -> NMI disabled -> 
+    //      NMI enabled before V-blank end -> CPU goes to vector again.
+
+    if ( start ) {
+        RDNMI |= 0x80;
+        if ( NMITIMEN & 0x80 ) {
+            InternalNMIFlag = 0x01;
+        }
+    }
+    else {
+        RDNMI &= ~0x80;
+    }
+    InternalNMIFlag = 0x01;
+}
+
+// TODO - move
+typedef struct TimerState {
+    bool vBlankLevel;
+    bool hBlankLevel;
+    uint8_t HVBJOY;
+    uint16_t vCount;
+    uint16_t hCount;
+    uint16_t VTIME;
+    uint16_t HTIME;
+    uint8_t TIMEUP;
+    uint16_t countDivisor;
+    bool vBlankIRQEnable; 
+    bool hBlankIRQEnable;
+} TimerState;
+
+static TimerState timerState;
+
+void vBlank( bool level ) {
+    if ( level == false ) {
+        timerState.vCount = 0;
+        timerState.HVBJOY &= ~80;
+    }
+    else {
+        if ( ( ( RDNMI & 0x80 ) == 0 ) && ( NMITIMEN & 0x80 ) ) {
+            InternalNMIFlag = true;
+        }
+        RDNMI |= 0x80;
+        timerState.HVBJOY |= 0x80;
+    }
+    timerState.vBlankLevel = level;
+    dmaVBlank( level );
+}
+
+void hBlank( bool level ) {
+    timerState.HVBJOY &= ~40;
+    if ( timerState.hBlankLevel == true ) {
+        timerState.hCount = 0;
+        dmaHBlank();
+    }
+    else {
+        timerState.HVBJOY |= 40;
+    }
+    timerState.hBlankLevel = level;
+}
+
+static inline void triggerBlankIRQ() {
+    timerState.TIMEUP = 0x80;
+    IRQ( false );
+}
+
+static inline void vTimerTick() {
+    // TODO - verify timing
+    ++timerState.vCount;
+    if ( timerState.vCount == timerState.VTIME && timerState.vBlankIRQEnable ) {
+        // IRQ trigger
+        triggerBlankIRQ();
+    }
+    // TODO - get actual boundary
+    if ( timerState.vCount == 264 ) {
+        // IRQ trigger
+        timerState.vCount = 0;
+    }
+}
+
+static inline void hTimerTick() {
+    // TODO - verify timing
+    if ( ++timerState.countDivisor % 4 == 0 ) {
+        ++timerState.hCount;
+        if ( timerState.hCount == timerState.HTIME && timerState.hBlankIRQEnable ) {
+            // IRQ trigger
+            triggerBlankIRQ();
+        }
+        // TODO - get actual boundary
+        if ( timerState.hCount == 264 ) {
+            vTimerTick();
+            timerState.hCount = 0;
+        }
+    }
+}
+
+typedef enum Vectors {
+    Vector_COP,
+    Vector_BRK,
+    Vector_ABORT,
+    Vector_NMI,
+    Vector_IRQ,
+    Vector_RESET
+} Vectors;
+
+static inline uint16_t GetVectorValue( Vectors vector ) {
+    if ( inEmulationMode ) {
+        switch( vector ) {
+            case Vector_COP:
+                return 0xFFE0;
+                break;
+            case Vector_BRK:
+                return 0xFFE6;
+                break;
+            case Vector_ABORT:
+                return 0xFFE8;
+                break;
+            case Vector_NMI:
+                return 0xFFEA;
+                break;
+            case Vector_IRQ:
+                return 0xFFEE;
+                break;
+            case Vector_RESET:
+                // ?
+                return 0x0000;
+                break;
+            default:
+                assert( false );
+                break;
+        }
+    }
+    else {
+        switch( vector ) {
+            case Vector_COP:
+                return 0xFFF4;
+                break;
+            case Vector_BRK:
+                return 0xFFFE;
+                break;
+            case Vector_ABORT:
+                return 0xFFF8;
+                break;
+            case Vector_NMI:
+                return 0xFFFA;
+                break;
+            case Vector_IRQ:
+                return 0xFFFE;
+                break;
+            case Vector_RESET:
+                return 0xFFFC;
+                break;
+            default:
+                assert( false );
+                break;
+        }
+    }
+    assert( false );
+    return 0x0000;
+}
+
 static inline uint8_t MainBusReadU8( MemoryAddress addressBus );
+
+void executeIRQ();
+void executeNMI();
 
 // Used as the base address of the current operation
 uint16_t currentOperationOffset;
 uint16_t nextOperationOffset;
 void cpuTick() {
-    currentOperationOffset = PC;
-    uint8_t currentOpcode = MainBusReadU8( (MemoryAddress){ PBR, PC } );
+    hTimerTick();
+    // TODO - Maybe after instruction?
+    if ( InternalNMIFlag ) {
+        InternalNMIFlag = false;
+        executeNMI();
+    }
+    else if ( !IRQpin && !inIRQHandler ) {
+        executeIRQ( Vector_IRQ );
+    }
+
+    if ( !dmaTick() ) {
+        currentOperationOffset = PC;
+        uint8_t currentOpcode = MainBusReadU8( (MemoryAddress){ PBR, PC } );
 
 #if 0
-    static int counter = 0;
-    counter++;
-    if ( counter == 1 ) {
-        start_comp();
-    }
-    uint8_t comparison = compare( GetExecutionState() );
-    if ( comparison != Match &&
-        ( comparison & ~( AccumulatorMismatch | PRegisterMismatch ) ) ){
-        // Current max score - 45873
-        printf( "Mismatch\n" );
-    }
+        static int counter = 0;
+        counter++;
+        if ( counter == 1 ) {
+            start_comp();
+        }
+        uint8_t comparison = compare( GetExecutionState() );
+        if ( comparison != Match &&
+            ( comparison & ~( AccumulatorMismatch | PRegisterMismatch ) ) ){
+            // Current max score - 45873
+            printf( "Mismatch\n" );
+        }
 
-    printf( "\n%03i | %02x:\n", counter, currentOpcode );
+        printf( "\n%03i | %02x:\n", counter, currentOpcode );
 #endif
-    InstructionEntry *entry = &instructions[ currentOpcode ];
-    nextOperationOffset = PC + entry->bytes;
+        InstructionEntry *entry = &instructions[ currentOpcode ];
+        nextOperationOffset = PC + entry->bytes;
 
-    // Opcode consumed, inc PC for getting operand(s)
-    ++PC;
-    entry->operation();
-    PC = nextOperationOffset;
+        // Opcode consumed, inc PC for getting operand(s)
+        ++PC;
+        entry->operation();
+        PC = nextOperationOffset;
+    }
+}
 
+/*
+//CPU On-Chip I/O Ports (Write-only) (Read=open bus)
+typedef struct CPUIORegistersB {
+4200h - NMITIMEN- Interrupt Enable and Joypad Request                   00h
+4201h - WRIO    - Joypad Programmable I/O Port (Open-Collector Output)  FFh
+4202h - WRMPYA  - Set unsigned 8bit Multiplicand                        (FFh)
+4203h - WRMPYB  - Set unsigned 8bit Multiplier and Start Multiplication (FFh)
+4204h - WRDIVL  - Set unsigned 16bit Dividend (lower 8bit)              (FFh)
+4205h - WRDIVH  - Set unsigned 16bit Dividend (upper 8bit)              (FFh)
+4206h - WRDIVB  - Set unsigned 8bit Divisor and Start Division          (FFh)
+4207h - HTIMEL  - H-Count Timer Setting (lower 8bits)                   (FFh)
+4208h - HTIMEH  - H-Count Timer Setting (upper 1bit)                    (01h)
+4209h - VTIMEL  - V-Count Timer Setting (lower 8bits)                   (FFh)
+420Ah - VTIMEH  - V-Count Timer Setting (upper 1bit)                    (01h)
+420Bh - MDMAEN  - Select General Purpose DMA Channel(s) and Start Transfer 0
+420Ch - HDMAEN  - Select H-Blank DMA (H-DMA) Channel(s)                    0
+420Dh - MEMSEL  - Memory-2 Waitstate Control                               0
+//420Eh..420Fh    - Unused region (open bus)                                 -
+} CPUIORegistersB;
+*/
+
+/*
+//CPU On-Chip I/O Ports (Read-only)
+typedef struct CPUIORegistersC {
+4210h - RDNMI   - V-Blank NMI Flag and CPU Version Number (Read/Ack)      0xh
+4211h - TIMEUP  - H/V-Timer IRQ Flag (Read/Ack)                           00h
+4212h - HVBJOY  - H/V-Blank flag and Joypad Busy flag (R)                 (?)
+4213h - RDIO    - Joypad Programmable I/O Port (Input)                    -
+4214h - RDDIVL  - Unsigned Division Result (Quotient) (lower 8bit)        (0)
+4215h - RDDIVH  - Unsigned Division Result (Quotient) (upper 8bit)        (0)
+4216h - RDMPYL  - Unsigned Division Remainder / Multiply Product (lower 8bit)
+4217h - RDMPYH  - Unsigned Division Remainder / Multiply Product (upper 8bit)
+4218h - JOY1L   - Joypad 1 (gameport 1, pin 4) (lower 8bit)               00h
+4219h - JOY1H   - Joypad 1 (gameport 1, pin 4) (upper 8bit)               00h
+421Ah - JOY2L   - Joypad 2 (gameport 2, pin 4) (lower 8bit)               00h
+421Bh - JOY2H   - Joypad 2 (gameport 2, pin 4) (upper 8bit)               00h
+421Ch - JOY3L   - Joypad 3 (gameport 1, pin 5) (lower 8bit)               00h
+421Dh - JOY3H   - Joypad 3 (gameport 1, pin 5) (upper 8bit)               00h
+421Eh - JOY4L   - Joypad 4 (gameport 2, pin 5) (lower 8bit)               00h
+421Fh - JOY4H   - Joypad 4 (gameport 2, pin 5) (upper 8bit)               00h
+//4220h..42FFh    - Unused region (open bus)                                -
+} CPUIORegistersC;
+*/
+
+static inline void CPUWriteOnlyIOPortAccess( uint16_t registerBus, uint8_t *dataBus ) {
+    // TODO
+    uint16_t offset = registerBus - 0x4200;
+    switch ( offset ) {
+        case 0x0000:
+            // NMITIMEN- Interrupt Enable and Joypad Request 00h
+            NMITIMEN = *dataBus;
+            timerState.hBlankIRQEnable = NMITIMEN & ( 1u << 4 );
+            timerState.vBlankIRQEnable = NMITIMEN & ( 1u << 5 );
+
+            if ( ( ( NMITIMEN & 0x80 ) == 0 ) && ( RDNMI & 0x80 ) ) {
+                InternalNMIFlag = true;
+            }
+            break;
+        case 0x0001:
+            // TODO - WRIO    - Joypad Programmable I/O Port (Open-Collector Output)  FFh
+            printf( "TODO - WRIO\n" );
+            break;
+        case 0x0002:
+            // TODO - WRMPYA  - Set unsigned 8bit Multiplicand (FFh)
+            printf( "TODO - WRMPYA\n" );
+            break;
+        case 0x0003:
+            // TODO - WRMPYB  - Set unsigned 8bit Multiplier and Start Multiplication (FFh)
+            printf( "TODO - WRMPYB\n" );
+            break;
+        case 0x0004:
+            // TODO - WRDIVL  - Set unsigned 16bit Dividend (lower 8bit) (FFh)
+            printf( "TODO - WRDIVL\n" );
+            break;
+        case 0x0005:
+            // TODO - WRDIVH  - Set unsigned 16bit Dividend (upper 8bit) (FFh)
+            printf( "TODO - WRDIVH\n" );
+            break;
+        case 0x0006:
+            // TODO - WRDIVB  - Set unsigned 8bit Divisor and Start Division (FFh)
+            printf( "TODO - WRDIVB\n" );
+            break;
+        case 0x0007:
+            // HTIMEL  - H-Count Timer Setting (lower 8bits) (FFh)
+            timerState.HTIME = ( timerState.HTIME & 0xFF00 ) | ( (uint16_t) *dataBus );
+            break;
+        case 0x0008:
+            // HTIMEH  - H-Count Timer Setting (upper 1bit) (01h)
+            timerState.HTIME = ( ( (uint16_t) ( *dataBus & 0x01 )  ) << 8 ) | ( timerState.HTIME & 0x00FF );
+            break;
+        case 0x0009:
+            // VTIMEL  - V-Count Timer Setting (lower 8bits) (FFh)
+            timerState.VTIME = ( timerState.VTIME & 0xFF00 ) | ( (uint16_t) *dataBus );
+            break;
+        case 0x000A:
+            // VTIMEH  - V-Count Timer Setting (upper 1bit) (01h)
+            timerState.VTIME = ( ( (uint16_t) ( *dataBus & 0x01 )  ) << 8 ) | ( timerState.VTIME & 0x00FF );
+            break;
+        case 0x000B:
+        case 0x000C:
+            // MDMAEN  - Select General Purpose DMA Channel(s) and Start Transfer 0
+            // HDMAEN  - Select H-Blank DMA (H-DMA) Channel(s) 0
+            dmaPortAccess( registerBus, dataBus, true );
+            break;
+        case 0x000D:
+            // TODO - MEMSEL  - Memory-2 Waitstate Control 0
+            printf( "TODO - MEMSEL\n" );
+            break;
+        default:
+            // Open bus
+            break;
+    }
+}
+
+static inline void CPUReadOnlyIOPortAccess( uint16_t registerBus, uint8_t *dataBus ) {
+    // TODO
+    uint16_t offset = registerBus - 0x4210;
+    switch ( offset ) {
+        case 0x00:
+            //RDNMI   - V-Blank NMI Flag and CPU Version Number (Read/Ack)      0xh
+            *dataBus = RDNMI;
+            RDNMI = 0x01;
+            break;
+        case 0x01:
+            // TODO - TIMEUP  - H/V-Timer IRQ Flag (Read/Ack)                           00h
+            printf( "TODO - TIMEUP\n" );
+            break;
+        case 0x02:
+            // TODO - HVBJOY  - H/V-Blank flag and Joypad Busy flag (R)                 (?)
+            printf( "TODO - HVBJOY\n" );
+            break;
+        case 0x03:
+            // TODO - RDIO    - Joypad Programmable I/O Port (Input)                    -
+            printf( "TODO - RDIO\n" );
+            break;
+        case 0x04:
+            // TODO - RDDIVL  - Unsigned Division Result (Quotient) (lower 8bit)        (0)
+            printf( "TODO - RDDIVL\n" );
+            break;
+        case 0x05:
+            // TODO - RDDIVH  - Unsigned Division Result (Quotient) (upper 8bit)        (0)
+            printf( "TODO - RDDIVH\n" );
+            break;
+        case 0x06:
+            // TODO - RDMPYL  - Unsigned Division Remainder / Multiply Product (lower 8bit)
+            printf( "TODO - RDMPYL\n" );
+            break;
+        case 0x07:
+            // TODO - RDMPYH  - Unsigned Division Remainder / Multiply Product (upper 8bit)
+            printf( "TODO - RDMPYH\n" );
+            break;
+        case 0x08:
+            // TODO - JOY1L   - Joypad 1 (gameport 1, pin 4) (lower 8bit)               00h
+            printf( "TODO - JOY1L\n" );
+            break;
+        case 0x09:
+            // TODO - JOY1H   - Joypad 1 (gameport 1, pin 4) (upper 8bit)               00h
+            printf( "TODO - JOY1H\n" );
+            break;
+        case 0x0A:
+            // TODO - JOY2L   - Joypad 2 (gameport 2, pin 4) (lower 8bit)               00h
+            printf( "TODO - JOY2L\n" );
+            break;
+        case 0x0B:
+            // TODO - JOY2H   - Joypad 2 (gameport 2, pin 4) (upper 8bit)               00h
+            printf( "TODO - JOY2H\n" );
+            break;
+        case 0x0C:
+            // TODO - JOY3L   - Joypad 3 (gameport 1, pin 5) (lower 8bit)               00h
+            printf( "TODO - JOY3L\n" );
+            break;
+        case 0x0D:
+            // TODO - JOY3H   - Joypad 3 (gameport 1, pin 5) (upper 8bit)               00h
+            printf( "TODO - JOY3H\n" );
+            break;
+        case 0x0E:
+            // TODO - JOY4L   - Joypad 4 (gameport 2, pin 5) (lower 8bit)               00h
+            printf( "TODO - JOY4L\n" );
+            break;
+        case 0x0F:
+            // TODO - JOY4H   - Joypad 4 (gameport 2, pin 5) (upper 8bit)               00h
+            printf( "TODO - JOY4H\n" );
+            break;
+        default:
+            // Open bus
+        break;
+    }
 }
 
 static inline void CPURegisterAccess( uint16_t registerBus, uint8_t *dataBus, bool writeLine ) {
-    // TODO
-    (void) registerBus;
-    (void) dataBus;
-    (void) writeLine;
-    printf( "TODO - CPU internal registers\n" );
+    if ( registerBus <= 0x4015 ) {
+        // Open bus
+    }
+    else if ( registerBus <= 0x4017 ) {
+        if ( registerBus == 0x4016 ) {
+            if ( writeLine ) {
+                // TODO - JOYWR - Joypad Output (W)
+                printf( "TODO - JOYWR\n" );
+            }
+            else {
+                // TODO - JOYA - Joypad Input Register A (R)
+                printf( "TODO - JOYA (R)\n" );
+            }
+        }
+        else if ( !writeLine ) {
+            // TODO - JOYB - Joypad Input Register B (R)
+            printf( "TODO - JOYB (R)\n" );
+        }
+        else {
+            // TODO - error, attempting to write to JOYB
+            printf( "Attempting to write to JOYB\n" );
+        }
+    }
+    else if ( registerBus <= 0x41FF ) {
+        // Open-bus
+    }
+    else if ( registerBus <= 0x420D && writeLine ) {
+        CPUWriteOnlyIOPortAccess( registerBus, dataBus );
+    }
+    else if ( registerBus <= 0x420F ) {
+        // Open-bus
+    }
+    else if ( registerBus <= 0x421F && !writeLine ) {
+        // Read-only IO ports
+        CPUReadOnlyIOPortAccess( registerBus, dataBus );
+    }
+    else if ( registerBus <= 0x42FF ) {
+        // Open-bus
+    }
+    else if ( registerBus <= 0x437F ) {
+        dmaPortAccess( registerBus, dataBus, writeLine );
+    }
+    else if ( registerBus <= 0x5FFF ) {
+        // Open-bus
+    }
+    else {
+        // TODO - error
+        printf( "Invalid CPU IO register address\n" );
+    }
+    
 }
 
-// TODO - split A and B bus up
-static inline void MemoryAccess( MemoryAddress addressBus, uint8_t *dataBus, bool writeLine ) {
+// TODO - move to common file
+void MemoryAccess( MemoryAddress addressBus, uint8_t *data, bool writeLine ) {
+    if ( writeLine ) {
+        MDR = *data;
+    }
+    uint8_t *dataBus = &MDR;
+
     if ( addressBus.bank <= 0x3F ) {
         if ( addressBus.offset <= 0x1FFF ) {
             // Address bus A + /WRAM
             // Always lower 8K of WRAM, so adjust the address accordingly
-            addressBus.bank = 0x7E;
+            addressBus.bank = 0x00;
             A_BusAccess( addressBus, dataBus, writeLine, true, false );
         }
         if ( addressBus.offset <= 0x20FF ) {
             // Address bus A
-            // TODO - possibly open-bus?
+            // Possibly open-bus?
         }
         else if ( addressBus.offset <= 0x21FF ) {
             // Address bus B
@@ -141,14 +573,14 @@ static inline void MemoryAccess( MemoryAddress addressBus, uint8_t *dataBus, boo
         }
         else if ( addressBus.offset <= 0x3FFF ) {
             // Address bus A
-            // TODO - Open bus?
+            // Possibly open bus?
         }
         else if ( addressBus.offset <= 0x437F ) {
             // Internal CPU registers
             CPURegisterAccess( addressBus.offset, dataBus, writeLine );
         }
         else if ( addressBus.offset <= 0x5FFF ) {
-            // TODO - Open-bus
+            // Open-bus
         }
         else if ( addressBus.offset <= 0x7FFF ) {
             // TODO - Expansion (A-bus probably)
@@ -166,18 +598,19 @@ static inline void MemoryAccess( MemoryAddress addressBus, uint8_t *dataBus, boo
     }
     else if ( addressBus.bank <= 0x7F ) {
         // Address bus A + /WRAM
+        addressBus.bank &= 0x01;
         A_BusAccess( addressBus, dataBus, writeLine, true, false );
     }
     else if ( addressBus.bank <= 0xBF ) {
         if ( addressBus.offset <= 0x1FFF ) {
             // Address bus A + /WRAM
             // Always lower 8K of WRAM, so adjust the address accordingly
-            addressBus.bank = 0x7E;
+            addressBus.bank = 0x00;
             A_BusAccess( addressBus, dataBus, writeLine, true, false );
         }
         if ( addressBus.offset <= 0x20FF ) {
             // Address bus A
-            // TODO - possibly open-bus?
+            // Possibly open-bus?
         }
         else if ( addressBus.offset <= 0x21FF ) {
             // Address bus B
@@ -186,14 +619,14 @@ static inline void MemoryAccess( MemoryAddress addressBus, uint8_t *dataBus, boo
         }
         else if ( addressBus.offset <= 0x3FFF ) {
             // Address bus A
-            // TODO - Open bus?
+            // Possbile open bus?
         }
         else if ( addressBus.offset <= 0x437F ) {
             // Internal CPU registers
             CPURegisterAccess( addressBus.offset, dataBus, writeLine );
         }
         else if ( addressBus.offset <= 0x5FFF ) {
-            // TODO - Open-bus
+            // Open-bus
         }
         else if ( addressBus.offset <= 0x7FFF ) {
             // TODO - Expansion (A-bus probably)
@@ -209,6 +642,11 @@ static inline void MemoryAccess( MemoryAddress addressBus, uint8_t *dataBus, boo
         // Address bus A + /CART
         A_BusAccess( addressBus, dataBus, writeLine, false, true );
     }
+
+    if ( !writeLine ) {
+        *data = MDR;
+    }
+
 }
 
 static inline uint8_t MainBusReadU8( MemoryAddress addressBus ) {
@@ -885,9 +1323,7 @@ void f70_BVS(){
 
 ////BRK    0    Stack / Interrupt    � - DI�    28
 void f00_BRK(){
-    // TODO
-    call_stack[ cs_counter++ ] = nextOperationOffset;
-    PC = 0xFFE6;
+    executeIRQ( Vector_BRK );
 }
 
 ////BRL label    82    Program Counter Relative Long        3
@@ -1156,8 +1592,7 @@ void fCC_CPY(){
 
 ////COP const    2    Stack / Interrupt    � - DI�    2
 void f02_COP() {
-    call_stack[ cs_counter++] = nextOperationOffset;
-    PC = 0xFFE4;
+    executeIRQ( Vector_COP );
 }
 
 #pragma region INC_DEC
@@ -2249,6 +2684,7 @@ void f40_RTI(){
     if ( !inEmulationMode ) {
         PBR = popU8();
     }
+    inIRQHandler = false;
 }
 
 ////RTL    6B    Stack(RTL)        1
@@ -2260,6 +2696,33 @@ void f6B_RTL(){
 ////RTS    60    Stack(RTS)        1
 void f60_RTS(){
     nextOperationOffset = popU16() + 1;
+}
+
+void executeIRQ( Vectors vector ) {
+    uint8_t pRegisterToPush = p_register;
+    if ( !inEmulationMode ) {
+        pushU8( PBR );
+    }
+    else if ( vector == Vector_BRK ) {
+        p_register |= M_FLAG; // M_FLAG is B_FLAG in emulation mode (TODO - add dedicated B_FLAG)
+    }
+    PBR = 0x00;
+    pushU16( nextOperationOffset );
+    pushU8( pRegisterToPush );
+
+    nextOperationOffset = GetVectorValue( vector );
+    inIRQHandler = true;
+}
+
+void executeNMI() {
+    if ( !inEmulationMode ) {
+        pushU8( PBR );
+    }
+    PBR = 0x00;
+    pushU16( nextOperationOffset );
+    pushU8( p_register );
+
+    nextOperationOffset = GetVectorValue( Vector_NMI );
 }
 
 #pragma endregion
@@ -2795,6 +3258,7 @@ void fBB_TYX(){
 ////WAI    CB    Implied        1
 void fCB_WAI(){
     // TODO
+    nextOperationOffset = currentOperationOffset;
 }
 
 //STP    DB    Implied        1
