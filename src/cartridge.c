@@ -165,7 +165,8 @@ void cartridgeMemoryAccess( MemoryAddress addressBus, uint8_t *dataBus, bool wri
         // Map to bank 0x3E-3F
         addressBus.bank &= 0x3F;
     }
-    
+    // TODO - GT says we need to do this, but should verify
+    addressBus.bank &= 0x07;
     uint32_t offset = ( (uint32_t)addressBus.bank << 16 ) | ( (uint32_t)addressBus.offset );
     *dataBus = emulatedCartridge.rom[ offset ];
 }

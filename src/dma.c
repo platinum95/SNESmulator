@@ -153,6 +153,9 @@ static inline void GPDMAChannelTick( uint8_t channel ) {
             
         }
     }
+    
+    channelRegisters->A1Th = (uint8_t)( ( ABusAddress.offset >> 8 ) & 0x00FF );
+    channelRegisters->A1Tl = (uint8_t)( ABusAddress.offset & 0x00FF );
 
     if ( bytesLeft == 0 ) {
         channelSelect.DMAChannelSelect &= ~( 1 << channel );

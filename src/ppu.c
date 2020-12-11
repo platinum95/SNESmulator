@@ -1,6 +1,7 @@
 #include "ppu.h"
 
 #include "cpu.h"
+#include "gfx.h" // Temp library while testing
 
 #include <assert.h>
 #include <memory.h>
@@ -109,6 +110,10 @@ static PPUState ppuState;
 void ppuInitialise() {
     memset( &ports, 0x00, sizeof( Ports ) );
     memset( &ppuState, 0x00, sizeof( PPUState ) );
+    ports.INIDISP = 0x80;
+
+    // Set up temp gfx lib
+    gfx_open( H_BLANK_BOUNDARY, V_BLANK_BOUNDARY, "SNESmulator" );
 }
 
 static inline void vInc() {
@@ -132,6 +137,119 @@ static inline void hInc() {
         hBlank( false );
         vInc();
     }
+    else if ( ppuState.hCount < H_BLANK_BOUNDARY && ppuState.vCount < V_BLANK_BOUNDARY ) {
+        // Draw a pixel
+        uint16_t xPos = ppuState.hCount;
+        uint16_t yPos = ppuState.vCount;
+        gfx_color( 0, 0, 0 );
+        if ( ports.INIDISP & 0x80 ) {
+            // F-blank
+            gfx_point( xPos, yPos );
+            return;
+        }
+
+        uint8_t brightness = ports.INIDISP & 0x0F;
+
+        uint8_t bgScreenMode = ports.BGMODE & 0x7;
+        bool bgPriorityMode = ports.BGMODE & ( 1 << 3 );
+        bool bg1_16x16 = ports.BGMODE & ( 1 << 4 );
+        bool bg2_16x16 = ports.BGMODE & ( 1 << 5 );
+        bool bg3_16x16 = ports.BGMODE & ( 1 << 6 );
+        bool bg4_16x16 = ports.BGMODE & ( 1 << 7 );
+
+        // TODO - BG colour modes
+
+        uint8_t mosaicSize = ( ports.BGMODE >> 4 ) & 0x0F;
+        bool bg1_mosaic = ports.BGMODE & ( 1 < 0 );
+        bool bg2_mosaic = ports.BGMODE & ( 1 < 1 );
+        bool bg3_mosaic = ports.BGMODE & ( 1 < 2 );
+        bool bg4_mosaic = ports.BGMODE & ( 1 < 3 );
+
+        uint8_t bg1BaseAddr = ( ports.BG1SC >> 2 ) & 0x3F;
+        uint8_t bg1Size = ports.BG1SC & 0x3;
+        uint8_t bg2BaseAddr = ( ports.BG2SC >> 2 ) & 0x3F;
+        uint8_t bg2Size = ports.BG2SC & 0x3;
+        uint8_t bg3BaseAddr = ( ports.BG3SC >> 2 ) & 0x3F;
+        uint8_t bg3Size = ports.BG3SC & 0x3;
+
+        uint8_t bg1TileBaseAddr = ports.BG12NBA & 0x0F;
+        uint8_t bg2TileBaseAddr = ( ports.BG12NBA >> 4 ) & 0x0F;
+        uint8_t bg3TileBaseAddr = ports.BG34NBA & 0x0F;
+        uint8_t bg4TileBaseAddr = ( ports.BG34NBA >> 4 ) & 0x0F;
+
+        uint8_t objSizeSel = ( ports.OBSEL >> 5 ) & 0x07;
+        uint8_t objGap = ( ports.OBSEL >> 3 ) & 0x03;
+        uint16_t objBaseAddr = ( ( ports.OBSEL & 0x07 ) * 2 * 0x4000 ) & 0x7FFF;
+
+        for ( uint8_t objID = 0; objID < 128; ++objID ) {
+            uint16_t objRamIdx = objID * 4 * sizeof( uint8_t );
+            uint16_t objXCoord = (uint16_t) OAMRAM[ objRamIdx++ ];
+            uint8_t objYCoord = OAMRAM[ objRamIdx++ ];
+            uint16_t objTileNumber = OAMRAM[ objRamIdx++ ];
+            uint8_t objAttrs = OAMRAM[ objRamIdx ];
+
+            objTileNumber |= ( (uint16_t)objAttrs & 0x01 ) << 8;
+            uint8_t paletteId = 8 + ( ( objAttrs >> 1 ) & 0x07 );
+            uint8_t priority = ( objAttrs >> 4 ) & 0x03;
+            bool xFlip = objAttrs & ( 1 << 6 );
+            bool yFlip = objAttrs & ( 1 << 7 );
+
+            uint8_t objAdditionalByte = OAMRAM[ 512 + ( objID / 4 ) ];
+            uint8_t objAdditionalData = ( objAdditionalByte >> ( ( objID % 4 ) * 2 ) ) & 0x03 ;
+            bool largeObj = objAdditionalData & 0x02;
+            objXCoord |= ( (uint16_t)objAdditionalData & 0x01 ) << 8;
+
+            // TODO - just assume size 0-large for now
+            uint8_t objXDim = 16;
+            uint8_t objYDim = 16;
+
+            // TODO - sign conversion stuff
+            int16_t relXPos = (int16_t)xPos - (int16_t)objXCoord;
+            int16_t relYPos = (int16_t)yPos - (int16_t)objYCoord;
+
+            // TODO - temp objID limitation
+            if ( relXPos >= 0 && relXPos < objXDim 
+                && relYPos >= 0 && relYPos < objYDim
+                && objID < 4 ) {
+                
+                static const size_t objTileSize = 32; // 8x8 pixels, 4 bits per pixel
+                uint16_t tileRowOffset = ( relYPos / 8 ) * 0x0010;
+                uint16_t tileColOffset = ( relXPos / 8 ) * 0x0001;
+                objTileNumber += tileRowOffset;
+                objTileNumber += tileColOffset;
+                relYPos %= 8;
+                relXPos %= 8;
+                uint16_t baseTileOffset = objBaseAddr + ( objTileNumber * objTileSize );
+
+                uint8_t rowData[ 4 ];
+                uint16_t bitplane1_2Offset = relYPos * 2 * sizeof( uint8_t ); 
+                uint16_t bitplane3_4Offset = bitplane1_2Offset + ( 16 * sizeof( uint8_t ) );
+                
+                rowData[ 0 ] = VRAM[ baseTileOffset + bitplane1_2Offset ]; //lsb
+                rowData[ 1 ] = VRAM[ baseTileOffset + bitplane1_2Offset + 1 ]; //slsb
+                rowData[ 2 ] = VRAM[ baseTileOffset + bitplane3_4Offset ]; //smsb
+                rowData[ 3 ] = VRAM[ baseTileOffset + bitplane3_4Offset + 1 ]; //msb
+
+                uint8_t colour = 0x00;
+                for ( uint8_t shift = 0; shift < 4; ++shift ) {
+                    colour |= ( ( rowData[ shift ] >> ( 7 - relXPos ) ) & 0x01 ) << shift;
+                }
+
+                uint16_t paletteEntryOffset = ( paletteId * 16 * sizeof( uint16_t ) );
+                uint16_t paletteColourOffset = paletteEntryOffset + ( colour * sizeof( uint16_t ) );
+
+                uint16_t paletteColour = ( ( (uint16_t)CGRAM[ paletteColourOffset ] ) << 8 ) | (uint16_t)CGRAM[ paletteColourOffset ];
+
+                uint8_t R = (uint8_t)paletteColour & 0x1F;
+                uint8_t G = (uint8_t)( paletteColour >> 5 ) & 0x1F;
+                uint8_t B = (uint8_t)( paletteColour >> 10 ) & 0x1F;
+
+                gfx_color( R * 8, G * 8, B * 8 );
+            }
+        }
+
+        gfx_point( xPos, yPos );
+    }
 }
 
 void ppuTick() {
@@ -145,6 +263,7 @@ void ppuTick() {
 
 static inline void prefetchRead() {
     uint16_t offset = ( ( (uint16_t)ports.VMADDH ) << 8 ) | ( (uint16_t)ports.VMADDL );
+    offset = ( offset * 2 ) & ~0x8000;
     ports.RDVRAML = VRAM[ offset ];
     ports.RDVRAMH = VRAM[ offset + 1 ];
 }
@@ -157,6 +276,7 @@ static inline void incrementVMADDR( bool highByte ) {
     if ( incHighByte ==  highByte ) {
         uint16_t addr = ( (uint16_t)( ports.VMADDH << 8 ) ) | ( (uint16_t)ports.VMADDL );
         addr += incStep;
+        ports.VMADDH &= ~0x80;
         ports.VMADDL = (uint8_t)( addr & 0x00FF );
         ports.VMADDH = (uint8_t)( ( addr >> 8 ) & 0x00FF );
     }
@@ -179,6 +299,8 @@ void ppuPortAccess( uint8_t addressBus, uint8_t *dataBus, bool writeLine ) {
             return;
         }
         else {
+            // TODO - BG__OFS
+            // TODO - M7_
             switch( addressBus ) {
                 case 0x02: {
                     // OAMADDL
@@ -198,7 +320,7 @@ void ppuPortAccess( uint8_t addressBus, uint8_t *dataBus, bool writeLine ) {
                     // OAMDATA
                     OAMRAM[ ppuState.oamramAddress ] = *dataBus;
                     ++ppuState.oamramAddress;
-                    ppuState.oamramAddress &= 0x1FF;
+                    ppuState.oamramAddress &= 0x3FF;
                     break;
                 }
                 case 0x16:
@@ -232,8 +354,8 @@ void ppuPortAccess( uint8_t addressBus, uint8_t *dataBus, bool writeLine ) {
                     else {
                         // TODO - open-bus upper-bit
                         uint16_t addr = ports.CGADD * 2;
-                        CGRAM[ addr ] = *dataBus;
-                        CGRAM[ addr - 1 ] = ppuState.CGRAM_lsb_latch;
+                        CGRAM[ addr + 1 ] = *dataBus;
+                        CGRAM[ addr ] = ppuState.CGRAM_lsb_latch;
                         ppuState.cgramSecondAccess = false;
                         ++ports.CGADD;
                     }
@@ -284,6 +406,17 @@ void ppuPortAccess( uint8_t addressBus, uint8_t *dataBus, bool writeLine ) {
                         ppuState.cgramSecondAccess = false;
                         ++ports.CGADD;
                     }
+                    break;
+                }
+                case 0x34: {
+                    // TODO - temp standin for OAM init
+                    *dataBus = 0x80;
+                    break;
+                }
+                case 0x35: {
+                    // TODO - temp standin for OAM init
+                    *dataBus = 0xE0;
+                    break;
                 }
             }
         }
